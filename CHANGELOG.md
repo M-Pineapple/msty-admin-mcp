@@ -5,6 +5,11 @@ All notable changes to Msty Admin MCP will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.1.1] - 2026-02-17
+
+### Fixed
+- **Truncated `phase4_5_tools.py`**: Restored 68 missing lines accidentally removed in v4.1.0 commit `37f34d87`, which truncated `evaluate_response_heuristic()` and the `__all__` export block (fixes [#2](https://github.com/M-Pineapple/msty-admin-mcp/issues/2))
+
 ## [4.1.0] - 2025-12-30
 
 ### Added
@@ -105,6 +110,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 | Version | Date | Phase | Tools |
 |---------|------|-------|-------|
+| 4.1.1 | 2026-02-17 | Bugfix | 24 |
 | 4.1.0 | 2025-12-30 | Enhancement | 24 |
 | 4.0.1 | 2025-12-27 | Bugfix | 24 |
 | 4.0.0 | 2025-12-27 | Phase 5 | 24 |
@@ -112,6 +118,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 | 2.0.0 | 2025-12-25 | Phase 2 | 10 |
 | 1.0.0 | 2025-12-24 | Phase 1 | 6 |
 
+[4.1.1]: https://github.com/M-Pineapple/msty-admin-mcp/compare/v4.1.0...v4.1.1
 [4.1.0]: https://github.com/M-Pineapple/msty-admin-mcp/compare/v4.0.1...v4.1.0
 [4.0.1]: https://github.com/M-Pineapple/msty-admin-mcp/compare/v4.0.0...v4.0.1
 [4.0.0]: https://github.com/M-Pineapple/msty-admin-mcp/compare/v3.0.0...v4.0.0

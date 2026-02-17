@@ -4,12 +4,12 @@ build-backend = "hatchling.build"
 
 [project]
 name = "msty-admin-mcp"
-version = "4.1.0"
+version = "4.1.1"
 description = "MCP Server for Msty Studio Desktop Administration - Database insights, configuration management, hardware optimization, and Claude Desktop sync"
 readme = "README.md"
 license = "MIT"
 authors = [
-    { name = "Pineapple 🍍", email = "pineapple@currentventures.co" }
+    { name = "Pineapple \ud83c\udf4d", email = "pineapple@currentventures.co" }
 ]
 keywords = [
     "mcp",

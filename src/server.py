@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Msty Admin MCP Server v4.1.0
+Msty Admin MCP Server v4.1.1
 
 AI-administered Msty Studio Desktop management system with database insights,
 configuration management, hardware optimization, and Claude Desktop sync.
@@ -86,7 +86,7 @@ mcp = FastMCP("msty-admin")
 # Constants
 # =============================================================================
 
-SERVER_VERSION = "4.1.0"
+SERVER_VERSION = "4.1.1"
 
 # Configurable via environment variables
 SIDECAR_HOST = os.environ.get("MSTY_SIDECAR_HOST", "127.0.0.1")
@@ -566,8 +566,8 @@ def analyse_msty_health() -> str:
             warnings.append(f"Database is large ({db_size_mb:.0f}MB)")
     
     health.recommendations.extend([
-        f"Msty Studio: {'Running ✅' if is_process_running('MstyStudio') else 'Not running'}",
-        f"Sidecar: {'Running ✅' if is_process_running('MstySidecar') else 'Not running'}"
+        f"Msty Studio: {'Running \u2705' if is_process_running('MstyStudio') else 'Not running'}",
+        f"Sidecar: {'Running \u2705' if is_process_running('MstySidecar') else 'Not running'}"
     ])
     
     health.overall_status = "critical" if issues else ("warning" if warnings else "healthy")
@@ -592,7 +592,7 @@ def get_server_status() -> str:
             "name": "msty-admin-mcp",
             "version": SERVER_VERSION,
             "phase": "Phase 5 - Tiered AI Workflow",
-            "author": "Pineapple 🍍"
+            "author": "Pineapple \ud83c\udf4d"
         },
         "available_tools": {
             "phase_1_foundational": ["detect_msty_installation", "read_msty_database", "list_configured_tools", "get_model_providers", "analyse_msty_health", "get_server_status"],
@@ -1055,11 +1055,11 @@ def get_model_performance_metrics(model_id: Optional[str] = None, days: int = 30
             for m in metrics["models"]:
                 tps = m.get("avg_tokens_per_second", 0) or 0
                 if tps > 50:
-                    insights.append(f"✅ {m['model_id']}: Excellent speed ({tps:.1f} tok/s)")
+                    insights.append(f"\u2705 {m['model_id']}: Excellent speed ({tps:.1f} tok/s)")
                 elif tps > 20:
-                    insights.append(f"👍 {m['model_id']}: Good speed ({tps:.1f} tok/s)")
+                    insights.append(f"\ud83d\udc4d {m['model_id']}: Good speed ({tps:.1f} tok/s)")
                 elif tps > 0:
-                    insights.append(f"⚠️ {m['model_id']}: Slow ({tps:.1f} tok/s)")
+                    insights.append(f"\u26a0\ufe0f {m['model_id']}: Slow ({tps:.1f} tok/s)")
             result["insights"] = insights
     except Exception as e:
         result["error"] = str(e)
