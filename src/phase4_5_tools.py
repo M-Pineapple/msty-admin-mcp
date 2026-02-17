@@ -392,4 +392,71 @@ def evaluate_response_heuristic(
     response_len = len(response)
     if response_len < 50:
         evaluation["criteria_scores"]["length"] = 0.3
-        evaluation["notes"].append("Response may
+        evaluation["notes"].append("Response may be too brief")
+    elif response_len < 100:
+        evaluation["criteria_scores"]["length"] = 0.6
+    elif response_len < 2000:
+        evaluation["criteria_scores"]["length"] = 1.0
+    else:
+        evaluation["criteria_scores"]["length"] = 0.8
+        evaluation["notes"].append("Response may be overly verbose")
+    
+    # Formatting quality
+    has_structure = any(marker in response for marker in ["\n\n", "1.", "- ", "* ", "##"])
+    if has_structure:
+        evaluation["criteria_scores"]["formatting"] = 0.9
+    else:
+        evaluation["criteria_scores"]["formatting"] = 0.6
+    
+    # Relevance (basic keyword matching)
+    prompt_keywords = set(prompt.lower().split())
+    response_keywords = set(response.lower().split())
+    overlap = len(prompt_keywords & response_keywords)
+    relevance_score = min(overlap / max(len(prompt_keywords), 1), 1.0)
+    evaluation["criteria_scores"]["relevance"] = relevance_score * 0.8 + 0.2
+    
+    # Category-specific checks
+    if category == "coding":
+        has_code = "```" in response or "def " in response or "function" in response
+        evaluation["criteria_scores"]["code_presence"] = 1.0 if has_code else 0.4
+        if not has_code:
+            evaluation["notes"].append("Expected code block not found")
+    
+    elif category == "reasoning":
+        has_reasoning = any(word in response.lower() for word in 
+                          ["because", "therefore", "since", "step", "first", "then"])
+        evaluation["criteria_scores"]["reasoning_markers"] = 1.0 if has_reasoning else 0.5
+        if not has_reasoning:
+            evaluation["notes"].append("Limited reasoning markers found")
+    
+    elif category == "writing":
+        # Check for British English indicators (if applicable)
+        british_markers = ["colour", "organise", "centre", "programme", "behaviour"]
+        has_british = any(word in response.lower() for word in british_markers)
+        # Not penalising if not British, just noting
+        if has_british:
+            evaluation["notes"].append("British English detected ✓")
+    
+    # Calculate overall score
+    scores = list(evaluation["criteria_scores"].values())
+    evaluation["score"] = sum(scores) / len(scores) if scores else 0.0
+    
+    # Determine pass/fail
+    evaluation["passed"] = evaluation["score"] >= 0.6
+    
+    return evaluation
+
+
+# Export functions for use in main server
+__all__ = [
+    'init_metrics_db',
+    'record_model_metric',
+    'get_model_metrics_summary',
+    'save_calibration_result',
+    'get_calibration_results',
+    'record_handoff_trigger',
+    'get_handoff_triggers',
+    'evaluate_response_heuristic',
+    'CALIBRATION_PROMPTS',
+    'QUALITY_RUBRIC'
+]
