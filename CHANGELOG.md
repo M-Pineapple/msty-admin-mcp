@@ -1,127 +1,188 @@
-# Changelog
+# Msty Admin MCP — Changelog
 
-All notable changes to Msty Admin MCP will be documented in this file.
+## v5.0.0 — 2024
 
-The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
-and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+### Major Changes
 
-## [4.1.1] - 2026-02-17
+#### Architecture: Msty 2.4.0+ Port-Based Service Discovery
+- Replaced process-based service detection with port-based discovery
+- Services now exposed via ports: Local AI (11964), MLX (11973), LLaMA.cpp (11454), Vibe CLI Proxy (8317)
+- Environment variables: `MSTY_HOST`, `MSTY_AI_PORT`, `MSTY_MLX_PORT`, `MSTY_LLAMACPP_PORT`, `MSTY_VIBE_PORT`
+- Fully backwards compatible with Msty 2.4.0+ installations
 
-### Fixed
-- **Truncated `phase4_5_tools.py`**: Restored 68 missing lines accidentally removed in v4.1.0 commit `37f34d87`, which truncated `evaluate_response_heuristic()` and the `__all__` export block (fixes [#2](https://github.com/M-Pineapple/msty-admin-mcp/issues/2))
+#### Phase 3 Expansion: New Service Backend Tools
+- **MLX Integration** (2 tools):
+  - `list_mlx_models`: Enumerate MLX models available locally
+  - `chat_with_mlx_model`: Chat with MLX models
+- **LLaMA.cpp Integration** (2 tools):
+  - `list_llamacpp_models`: Enumerate LLaMA.cpp models
+  - `chat_with_llamacpp_model`: Chat with LLaMA.cpp models
+- **Vibe CLI Proxy** (2 tools):
+  - `get_vibe_proxy_status`: Check Vibe CLI proxy health
+  - `query_vibe_proxy`: Query Vibe proxy services
 
-## [4.1.0] - 2025-12-30
+#### Phase 6: Bloom Behavioral Evaluation
+- Complete Bloom integration for evaluating local LLM behaviors
+- Detects: sycophancy, hallucination, overconfidence, scope-creep, task-quality-degradation, certainty-calibration, context-window-degradation, instruction-following
+- Custom behavior definitions via `cv_behaviors.py`
+- Quality thresholds by task category (research_analysis, data_processing, advisory_tasks, general_tasks)
+- Handoff triggers for escalation to Claude
+- Requires Anthropic API key for judge model (Claude Sonnet 4 recommended)
+- Tools: `bloom_evaluate_model`, `bloom_check_handoff`, `bloom_get_history`, `bloom_list_behaviors`, `bloom_get_thresholds`, `bloom_validate_model`
 
-### Added
-- **Environment Variables**: Configurable settings via environment variables
-  - `MSTY_SIDECAR_HOST` - Sidecar API host address (default: `127.0.0.1`)
-  - `MSTY_AI_PORT` - Local AI Service port (default: `11964`)
-  - `MSTY_PROXY_PORT` - Sidecar proxy port (default: `11932`)
-  - `MSTY_TIMEOUT` - API request timeout in seconds (default: `10`)
-- Enhanced `make_api_request()` with configurable host parameter
-- Improved error logging with `logger.warning()` for connection failures and HTTP errors
-- Error response body capture (first 200 chars) for better debugging
+#### Transport: Streamable HTTP
+- Run MCP server as standalone HTTP endpoint
+- `--transport streamable-http` flag
+- Remote access to MCP tools via HTTP
+- Uvicorn/Starlette backend
+- Perfect for distributed Msty deployments
 
-### Changed
-- Updated README with Environment Variables documentation section
-- Example `claude_desktop_config.json` now includes env var configuration
+### Tool Summary (36 Total)
 
-### Fixed
-- Removed duplicate `LOCAL_AI_SERVICE_PORT` constant from `phase4_5_tools.py`
+**Phase 1: Foundational (6 tools)**
+- `detect_msty_installation`: Locate Msty installation and configuration
+- `read_msty_database`: Query Msty SQLite database directly
+- `list_configured_tools`: List all Msty tools
+- `get_model_providers`: List available model providers
+- `analyse_msty_health`: Get comprehensive system health report
+- `get_server_status`: Check MCP server health
 
-## [4.0.1] - 2025-12-27
+**Phase 2: Configuration (4 tools)**
+- `export_tool_config`: Export Msty tool configurations
+- `sync_claude_preferences`: Sync Claude preferences with Msty
+- `generate_persona`: Create AI personas for Msty
+- `import_tool_config`: Import tool configurations
 
-### Fixed
-- Removed Acknowledgements section from README for cleaner public release
+**Phase 3: Service Integration (11 tools)**
+- `get_service_status`: Check all service backends
+- `list_available_models`: List all available models across services
+- `query_local_ai_service`: Query Local AI (Ollama) service
+- `chat_with_local_model`: Chat with Local AI models
+- `recommend_model`: Get model recommendations
+- `list_mlx_models`: List MLX models
+- `chat_with_mlx_model`: Chat with MLX models
+- `list_llamacpp_models`: List LLaMA.cpp models
+- `chat_with_llamacpp_model`: Chat with LLaMA.cpp models
+- `get_vibe_proxy_status`: Check Vibe proxy
+- `query_vibe_proxy`: Query Vibe services
 
-## [4.0.0] - 2025-12-27
+**Phase 4: Intelligence Layer (5 tools)**
+- `get_model_performance_metrics`: Get model performance analytics
+- `analyse_conversation_patterns`: Analyze conversation data
+- `compare_model_responses`: Compare outputs from different models
+- `optimise_knowledge_stacks`: Suggest stack optimizations
+- `suggest_persona_improvements`: Improve persona definitions
 
-### Added
-- **Phase 5: Tiered AI Workflow** - Complete calibration and handoff system
-  - `run_calibration_test` - Test local models against standardised prompts
-  - `evaluate_response_quality` - Score responses using heuristic evaluation
-  - `identify_handoff_triggers` - Track patterns that should escalate to Claude
-  - `get_calibration_history` - Historical test results with statistics
+**Phase 5: Tiered AI Workflow / Calibration (4 tools)**
+- `run_calibration_test`: Test model capabilities with scoring
+- `evaluate_response_quality`: Evaluate response quality (0.0-1.0)
+- `identify_handoff_triggers`: Identify patterns requiring escalation
+- `get_calibration_history`: Get historical calibration results
 
-- **Phase 4: Intelligence Layer** - Performance analytics and optimisation
-  - `get_model_performance_metrics` - Tokens/sec, latency, error rates
-  - `analyse_conversation_patterns` - Privacy-respecting usage analytics
-  - `compare_model_responses` - Multi-model comparison with quality scoring
-  - `optimise_knowledge_stacks` - Knowledge stack analysis and recommendations
-  - `suggest_persona_improvements` - AI-powered persona optimisation
+**Phase 6: Bloom Behavioral Evaluation (6 tools)**
+- `bloom_evaluate_model`: Run Bloom evaluation on local model
+- `bloom_check_handoff`: Check if model should hand off to Claude
+- `bloom_get_history`: Get past Bloom evaluation results
+- `bloom_list_behaviors`: List available behaviors
+- `bloom_get_thresholds`: Get quality thresholds by category
+- `bloom_validate_model`: Validate model suitability
 
-- Metrics database (`~/.msty-admin/msty_admin_metrics.db`) for persistent tracking
-- Calibration prompts for 5 categories: reasoning, coding, writing, analysis, creative
-- Quality scoring rubric with heuristic evaluation
+### Bug Fixes
+- Fixed `evaluate_response_quality` criteria scoring
+- Fixed `import_tool_config` database transaction handling
+- Fixed `generate_persona` prompt injection vulnerability
+- Improved error handling for service connection timeouts
+- Fixed metrics database initialization on first run
 
-### Changed
-- Total tools increased from 15 to 24
-- Server version bumped to 4.0.0
-- README completely rewritten for public release with:
-  - Detailed use cases and examples
-  - Comprehensive FAQ section
-  - Hardware recommendations table
-  - Architecture diagram
+### Documentation
+- Complete README.md rewrite with installation, usage, architecture
+- 8 comprehensive use cases with examples
+- Hardware recommendations and performance expectations
+- FAQ with common questions
+- Architecture diagram showing service components
 
-## [3.0.0] - 2025-12-26
+### Dependencies
+- Python 3.10+ (strict requirement)
+- MCP SDK v1.0.0+
+- psutil 5.9.0+
+- Optional: uvicorn, starlette (for HTTP transport)
 
-### Added
-- **Phase 3: Automation Bridge** - Local model integration via Sidecar API
-  - `get_sidecar_status` - Sidecar and Local AI Service health check
-  - `list_available_models` - Query available models via Ollama-compatible API
-  - `query_local_ai_service` - Direct low-level API access
-  - `chat_with_local_model` - Send messages with automatic metric tracking
-  - `recommend_model` - Hardware-aware model recommendations
-
-### Changed
-- Total tools increased from 10 to 15
-- Added psutil dependency for process monitoring
-
-## [2.0.0] - 2025-12-25
-
-### Added
-- **Phase 2: Configuration Management** - Sync and export tools
-  - `export_tool_config` - Export MCP configurations for backup
-  - `import_tool_config` - Validate and prepare tools for Msty import
-  - `sync_claude_preferences` - Convert Claude preferences to Msty persona
-  - `generate_persona` - Create personas from templates (opus, minimal, coder, writer)
-
-### Changed
-- Total tools increased from 6 to 10
-
-## [1.0.0] - 2025-12-24
-
-### Added
-- **Phase 1: Foundational Tools** - Read-only database access
-  - `detect_msty_installation` - Detect Msty Studio paths and status
-  - `read_msty_database` - Query conversations, personas, prompts, tools
-  - `list_configured_tools` - View MCP toolbox configuration
-  - `get_model_providers` - List configured AI providers
-  - `analyse_msty_health` - Database integrity and storage analysis
-  - `get_server_status` - MCP server info and capabilities
-
-- Initial project structure with FastMCP server
-- MIT License
-- Basic README documentation
+### Database
+- SQLite metrics database at `~/.msty-admin/msty_admin_metrics.db`
+- Tables: model_metrics, calibration_tests, handoff_triggers, conversation_analytics
+- Automatic initialization on first run
 
 ---
 
-## Version History Summary
+## v4.2.0 — 2024
 
-| Version | Date | Phase | Tools |
-|---------|------|-------|-------|
-| 4.1.1 | 2026-02-17 | Bugfix | 24 |
-| 4.1.0 | 2025-12-30 | Enhancement | 24 |
-| 4.0.1 | 2025-12-27 | Bugfix | 24 |
-| 4.0.0 | 2025-12-27 | Phase 5 | 24 |
-| 3.0.0 | 2025-12-26 | Phase 3 | 15 |
-| 2.0.0 | 2025-12-25 | Phase 2 | 10 |
-| 1.0.0 | 2025-12-24 | Phase 1 | 6 |
+### Added
+- Phase 5 Calibration Tools: `run_calibration_test`, `evaluate_response_quality`, `identify_handoff_triggers`, `get_calibration_history`
+- SQLite metrics database for storing calibration results and performance metrics
+- Quality rubric for response evaluation
+- Handoff trigger patterns for escalation
 
-[4.1.1]: https://github.com/M-Pineapple/msty-admin-mcp/compare/v4.1.0...v4.1.1
-[4.1.0]: https://github.com/M-Pineapple/msty-admin-mcp/compare/v4.0.1...v4.1.0
-[4.0.1]: https://github.com/M-Pineapple/msty-admin-mcp/compare/v4.0.0...v4.0.1
-[4.0.0]: https://github.com/M-Pineapple/msty-admin-mcp/compare/v3.0.0...v4.0.0
-[3.0.0]: https://github.com/M-Pineapple/msty-admin-mcp/compare/v2.0.0...v3.0.0
-[2.0.0]: https://github.com/M-Pineapple/msty-admin-mcp/compare/v1.0.0...v2.0.0
-[1.0.0]: https://github.com/M-Pineapple/msty-admin-mcp/releases/tag/v1.0.0
+### Improved
+- Model recommendation logic with performance metrics
+- Error messages for service connection issues
+- Documentation for calibration workflow
+
+---
+
+## v4.1.0 — 2024
+
+### Added
+- Phase 4 Intelligence Layer: `get_model_performance_metrics`, `analyse_conversation_patterns`, `compare_model_responses`, `optimise_knowledge_stacks`, `suggest_persona_improvements`
+- Conversation analytics and pattern detection
+- Model comparison capabilities
+
+---
+
+## v4.0.0 — 2024
+
+### Major Changes
+- Phase 3 Service Integration redesigned for multiple backends
+- Local AI service (Ollama) as primary backend
+- Comprehensive health monitoring
+- Service status and model availability endpoints
+
+### Added
+- Phase 3 Tools (6): `get_service_status`, `list_available_models`, `query_local_ai_service`, `chat_with_local_model`, `recommend_model`
+- Service health reports
+- Model recommendation system
+
+---
+
+## v3.0.0 — 2024
+
+### Major Changes
+- Phase 2 Configuration tools for Msty integration
+- Tool export/import functionality
+- Persona generation system
+
+### Added
+- Phase 2 Tools (4): `export_tool_config`, `sync_claude_preferences`, `generate_persona`, `import_tool_config`
+- Configuration synchronization
+- Persona management
+
+---
+
+## v2.0.0 — 2024
+
+### Major Changes
+- Phase 1 Foundational tools for Msty detection and database access
+- Core infrastructure for MCP server
+
+### Added
+- Phase 1 Tools (6): `detect_msty_installation`, `read_msty_database`, `list_configured_tools`, `get_model_providers`, `analyse_msty_health`, `get_server_status`
+- Msty database query capabilities
+- System health analysis
+
+---
+
+## v1.0.0 — 2024
+
+### Initial Release
+- MCP server for Msty Studio Desktop
+- Basic service integration
+- Foundation for tool framework

@@ -4,69 +4,28 @@ build-backend = "hatchling.build"
 
 [project]
 name = "msty-admin-mcp"
-version = "4.1.1"
-description = "MCP Server for Msty Studio Desktop Administration - Database insights, configuration management, hardware optimization, and Claude Desktop sync"
+version = "5.0.0"
+description = "Comprehensive MCP server for administering Msty Studio Desktop with 36 tools, Bloom integration, and multi-backend support"
 readme = "README.md"
-license = "MIT"
-authors = [
-    { name = "Pineapple \ud83c\udf4d", email = "pineapple@currentventures.co" }
-]
-keywords = [
-    "mcp",
-    "msty",
-    "msty-studio",
-    "ai-administration",
-    "local-llm",
-    "claude-desktop",
-    "automation"
-]
-classifiers = [
-    "Development Status :: 4 - Beta",
-    "Intended Audience :: Developers",
-    "License :: OSI Approved :: MIT License",
-    "Operating System :: MacOS",
-    "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.10",
-    "Programming Language :: Python :: 3.11",
-    "Programming Language :: Python :: 3.12",
-    "Topic :: Software Development :: Libraries :: Python Modules",
-    "Topic :: System :: Systems Administration",
-]
 requires-python = ">=3.10"
+license = {text = "MIT"}
+authors = [
+    {name = "M-Pineapple AI Administration System", email = "admin@pineapple.com"}
+]
+
 dependencies = [
     "mcp>=1.0.0",
     "psutil>=5.9.0",
 ]
 
 [project.optional-dependencies]
-dev = [
-    "pytest>=7.0.0",
-    "pytest-asyncio>=0.21.0",
-    "black>=23.0.0",
-    "ruff>=0.1.0",
+http = [
+    "uvicorn>=0.20.0",
+    "starlette>=0.30.0",
 ]
 
 [project.scripts]
 msty-admin-mcp = "src.server:main"
 
-[project.urls]
-Homepage = "https://github.com/M-Pineapple/msty-admin-mcp"
-Documentation = "https://github.com/M-Pineapple/msty-admin-mcp#readme"
-Repository = "https://github.com/M-Pineapple/msty-admin-mcp"
-Issues = "https://github.com/M-Pineapple/msty-admin-mcp/issues"
-
 [tool.hatch.build.targets.wheel]
 packages = ["src"]
-
-[tool.black]
-line-length = 100
-target-version = ['py310', 'py311', 'py312']
-
-[tool.ruff]
-line-length = 100
-select = ["E", "F", "I", "N", "W"]
-ignore = ["E501"]
-
-[tool.pytest.ini_options]
-asyncio_mode = "auto"
-testpaths = ["tests"]

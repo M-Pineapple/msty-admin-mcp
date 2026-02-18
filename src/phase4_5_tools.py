@@ -1,243 +1,198 @@
 """
-Phase 4 & 5 Tools for Msty Admin MCP
+Utility functions for Phase 4 (Intelligence Layer) and Phase 5 (Tiered AI Workflow)
 
-Phase 4: Intelligence Layer
-- get_model_performance_metrics
-- analyse_conversation_patterns
-- compare_model_responses
-- optimise_knowledge_stacks
-- suggest_persona_improvements
-
-Phase 5: Tiered AI Workflow
-- run_calibration_test
-- evaluate_response_quality
-- identify_handoff_triggers
-- get_calibration_history
-
-Created by Pineapple 🍍 AI Administration System
+Provides:
+- Calibration prompts and quality rubrics
+- Response evaluation heuristics
+- Metrics database operations
+- Handoff trigger tracking
 """
 
-import json
-import time
-import hashlib
 import sqlite3
-from datetime import datetime, timedelta
+import json
+from datetime import datetime
 from pathlib import Path
-from typing import Any, Optional, Dict, List
-
-# =============================================================================
-# Constants
-# =============================================================================
-
-METRICS_DB_NAME = "msty_admin_metrics.db"
+from typing import List, Dict, Any, Optional
 
 # Calibration test prompts by category
 CALIBRATION_PROMPTS = {
     "reasoning": [
-        "A bat and a ball cost $1.10 in total. The bat costs $1.00 more than the ball. How much does the ball cost? Explain your reasoning step by step.",
-        "If it takes 5 machines 5 minutes to make 5 widgets, how long would it take 100 machines to make 100 widgets? Show your work.",
+        "A company has 100 employees. Each employee works 40 hours per week. If the company pays $50 per hour on average, what is the weekly payroll cost? Show your working.",
+        "If all squares are rectangles, and all rectangles are quadrilaterals, are all squares quadrilaterals? Explain your logic.",
     ],
     "coding": [
-        "Write a Python function that finds the longest palindromic substring in a given string. Include comments explaining your approach.",
-        "Implement a simple LRU cache in Python with O(1) get and put operations.",
+        "Write a Python function that takes a list of numbers and returns the sum of all even numbers.",
+        "How would you implement a simple LRU (Least Recently Used) cache in Python?",
     ],
     "writing": [
-        "Write a professional email declining a meeting invitation due to a scheduling conflict. Keep it concise and courteous.",
-        "Summarise the key benefits of renewable energy in 100 words or less, using British English spelling.",
+        "Write a professional email requesting a project deadline extension due to unforeseen circumstances.",
+        "Create a compelling product description for a hypothetical AI-powered note-taking app.",
     ],
     "analysis": [
-        "What are the potential risks and benefits of a company moving from on-premises infrastructure to cloud computing? Provide a balanced analysis.",
-        "Compare and contrast microservices and monolithic architecture. When would you recommend each approach?",
+        "What are the key factors that would influence the adoption rate of a new technology in enterprise settings?",
+        "Analyze the trade-offs between speed and accuracy in machine learning model selection.",
     ],
     "creative": [
-        "Write a short story opening (100 words) that hooks the reader immediately.",
-        "Create a haiku about artificial intelligence.",
-    ]
+        "Generate a creative product name and slogan for an eco-friendly water bottle startup.",
+        "Write a short creative story (2-3 paragraphs) about an unexpected discovery.",
+    ],
 }
 
-# Quality scoring rubric
+# Quality evaluation rubric
 QUALITY_RUBRIC = {
-    "accuracy": "Response is factually correct and logically sound",
-    "completeness": "Response addresses all aspects of the prompt",
-    "clarity": "Response is clear, well-organised, and easy to understand",
-    "relevance": "Response stays on topic and provides useful information",
-    "formatting": "Response uses appropriate formatting and structure"
+    "accuracy": {
+        "description": "Factual correctness and absence of errors",
+        "weight": 0.25,
+    },
+    "completeness": {
+        "description": "Coverage of all relevant aspects",
+        "weight": 0.25,
+    },
+    "clarity": {
+        "description": "Clarity of expression and structure",
+        "weight": 0.20,
+    },
+    "relevance": {
+        "description": "Directly addresses the prompt",
+        "weight": 0.15,
+    },
+    "formatting": {
+        "description": "Proper formatting and presentation",
+        "weight": 0.15,
+    },
 }
 
 
 def get_metrics_db_path() -> Path:
-    """Get path to the metrics database"""
-    metrics_dir = Path.home() / ".msty-admin"
-    metrics_dir.mkdir(parents=True, exist_ok=True)
-    return metrics_dir / METRICS_DB_NAME
+    """Get path to metrics database."""
+    return Path.home() / ".msty-admin" / "msty_admin_metrics.db"
 
 
 def init_metrics_db():
-    """Initialise the metrics database with required tables"""
+    """Initialize metrics database with required tables."""
     db_path = get_metrics_db_path()
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    
     conn = sqlite3.connect(str(db_path))
     cursor = conn.cursor()
     
-    # Model performance metrics
+    # Model metrics table
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS model_metrics (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id INTEGER PRIMARY KEY,
             model_id TEXT NOT NULL,
-            request_timestamp TEXT NOT NULL,
-            prompt_tokens INTEGER DEFAULT 0,
-            completion_tokens INTEGER DEFAULT 0,
-            total_tokens INTEGER DEFAULT 0,
-            latency_seconds REAL DEFAULT 0.0,
-            tokens_per_second REAL DEFAULT 0.0,
-            success INTEGER DEFAULT 1,
-            error_message TEXT,
+            prompt_tokens INTEGER,
+            completion_tokens INTEGER,
+            latency_seconds REAL,
+            success BOOLEAN,
             use_case TEXT,
-            UNIQUE(model_id, request_timestamp)
+            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
         )
     """)
     
-    # Calibration tests
+    # Calibration tests table
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS calibration_tests (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            test_id TEXT UNIQUE NOT NULL,
+            id INTEGER PRIMARY KEY,
+            test_id TEXT UNIQUE,
             model_id TEXT NOT NULL,
-            prompt_category TEXT NOT NULL,
-            prompt TEXT NOT NULL,
+            prompt_category TEXT,
+            prompt TEXT,
             local_response TEXT,
-            quality_score REAL DEFAULT 0.0,
+            quality_score REAL,
             evaluation_notes TEXT,
-            tokens_per_second REAL DEFAULT 0.0,
-            timestamp TEXT NOT NULL,
-            passed INTEGER DEFAULT 0
+            tokens_per_second REAL,
+            passed BOOLEAN,
+            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
         )
     """)
     
-    # Handoff triggers
+    # Handoff triggers table
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS handoff_triggers (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            pattern_type TEXT NOT NULL,
-            pattern_description TEXT NOT NULL,
-            trigger_count INTEGER DEFAULT 1,
-            last_triggered TEXT,
-            confidence REAL DEFAULT 0.5,
-            active INTEGER DEFAULT 1
+            id INTEGER PRIMARY KEY,
+            pattern_type TEXT,
+            pattern_description TEXT,
+            confidence REAL,
+            is_active BOOLEAN DEFAULT 1,
+            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
         )
     """)
     
-    # Conversation analytics
+    # Conversation analytics table
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS conversation_analytics (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            date TEXT NOT NULL,
+            id INTEGER PRIMARY KEY,
             model_id TEXT,
-            session_count INTEGER DEFAULT 0,
-            message_count INTEGER DEFAULT 0,
-            avg_session_length_minutes REAL DEFAULT 0.0,
-            avg_messages_per_session REAL DEFAULT 0.0,
-            primary_use_case TEXT,
-            UNIQUE(date, model_id)
+            total_turns INTEGER,
+            avg_response_time REAL,
+            error_count INTEGER,
+            conversation_quality REAL,
+            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
         )
     """)
     
     conn.commit()
     conn.close()
-    return str(db_path)
 
 
 def record_model_metric(
     model_id: str,
-    prompt_tokens: int = 0,
-    completion_tokens: int = 0,
-    latency_seconds: float = 0.0,
-    success: bool = True,
-    error_message: str = None,
-    use_case: str = None
+    prompt_tokens: int,
+    completion_tokens: int,
+    latency_seconds: float,
+    success: bool,
+    use_case: str = "general"
 ):
-    """Record a model performance metric"""
+    """Record a model performance metric."""
     db_path = get_metrics_db_path()
     conn = sqlite3.connect(str(db_path))
     cursor = conn.cursor()
     
-    total_tokens = prompt_tokens + completion_tokens
-    tokens_per_second = completion_tokens / max(latency_seconds, 0.1) if completion_tokens > 0 else 0.0
+    cursor.execute("""
+        INSERT INTO model_metrics
+        (model_id, prompt_tokens, completion_tokens, latency_seconds, success, use_case)
+        VALUES (?, ?, ?, ?, ?, ?)
+    """, (model_id, prompt_tokens, completion_tokens, latency_seconds, success, use_case))
     
-    try:
-        cursor.execute("""
-            INSERT INTO model_metrics 
-            (model_id, request_timestamp, prompt_tokens, completion_tokens, total_tokens,
-             latency_seconds, tokens_per_second, success, error_message, use_case)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (
-            model_id,
-            datetime.now().isoformat(),
-            prompt_tokens,
-            completion_tokens,
-            total_tokens,
-            latency_seconds,
-            tokens_per_second,
-            1 if success else 0,
-            error_message,
-            use_case
-        ))
-        conn.commit()
-    except sqlite3.IntegrityError:
-        pass  # Duplicate entry
-    finally:
-        conn.close()
+    conn.commit()
+    conn.close()
 
 
-def get_model_metrics_summary(model_id: str = None, days: int = 30) -> Dict[str, Any]:
-    """Get aggregated metrics for models"""
+def get_model_metrics_summary(model_id: Optional[str] = None, days: int = 7) -> Dict[str, Any]:
+    """Get summary metrics for a model over a time period."""
     db_path = get_metrics_db_path()
     if not db_path.exists():
-        return {"error": "Metrics database not initialised"}
+        return {}
     
     conn = sqlite3.connect(str(db_path))
     conn.row_factory = sqlite3.Row
     cursor = conn.cursor()
     
-    cutoff_date = (datetime.now() - timedelta(days=days)).isoformat()
+    query = """
+        SELECT
+            model_id,
+            COUNT(*) as request_count,
+            AVG(latency_seconds) as avg_latency,
+            AVG(prompt_tokens) as avg_prompt_tokens,
+            AVG(completion_tokens) as avg_completion_tokens,
+            SUM(CASE WHEN success THEN 1 ELSE 0 END) * 1.0 / COUNT(*) as success_rate
+        FROM model_metrics
+        WHERE datetime(timestamp) > datetime('now', '-' || ? || ' days')
+    """
     
+    params = [days]
     if model_id:
-        cursor.execute("""
-            SELECT 
-                model_id,
-                COUNT(*) as total_requests,
-                SUM(total_tokens) as total_tokens,
-                AVG(tokens_per_second) as avg_tokens_per_second,
-                AVG(latency_seconds) as avg_latency_seconds,
-                SUM(CASE WHEN success = 0 THEN 1 ELSE 0 END) as error_count,
-                MAX(request_timestamp) as last_used
-            FROM model_metrics
-            WHERE model_id = ? AND request_timestamp > ?
-            GROUP BY model_id
-        """, (model_id, cutoff_date))
-    else:
-        cursor.execute("""
-            SELECT 
-                model_id,
-                COUNT(*) as total_requests,
-                SUM(total_tokens) as total_tokens,
-                AVG(tokens_per_second) as avg_tokens_per_second,
-                AVG(latency_seconds) as avg_latency_seconds,
-                SUM(CASE WHEN success = 0 THEN 1 ELSE 0 END) as error_count,
-                MAX(request_timestamp) as last_used
-            FROM model_metrics
-            WHERE request_timestamp > ?
-            GROUP BY model_id
-            ORDER BY total_requests DESC
-        """, (cutoff_date,))
+        query += " AND model_id = ?"
+        params.append(model_id)
     
-    results = [dict(row) for row in cursor.fetchall()]
+    query += " GROUP BY model_id"
+    
+    cursor.execute(query, params)
+    rows = cursor.fetchall()
     conn.close()
     
-    return {
-        "period_days": days,
-        "models": results,
-        "model_count": len(results)
-    }
+    return [dict(row) for row in rows]
 
 
 def save_calibration_result(
@@ -251,98 +206,28 @@ def save_calibration_result(
     tokens_per_second: float,
     passed: bool
 ):
-    """Save a calibration test result"""
+    """Save a calibration test result."""
     db_path = get_metrics_db_path()
     conn = sqlite3.connect(str(db_path))
     cursor = conn.cursor()
     
-    try:
-        cursor.execute("""
-            INSERT OR REPLACE INTO calibration_tests
-            (test_id, model_id, prompt_category, prompt, local_response, 
-             quality_score, evaluation_notes, tokens_per_second, timestamp, passed)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (
-            test_id,
-            model_id,
-            prompt_category,
-            prompt,
-            local_response,
-            quality_score,
-            evaluation_notes,
-            tokens_per_second,
-            datetime.now().isoformat(),
-            1 if passed else 0
-        ))
-        conn.commit()
-    finally:
-        conn.close()
-
-
-def get_calibration_results(model_id: str = None, limit: int = 50) -> List[Dict]:
-    """Get calibration test results"""
-    db_path = get_metrics_db_path()
-    if not db_path.exists():
-        return []
-    
-    conn = sqlite3.connect(str(db_path))
-    conn.row_factory = sqlite3.Row
-    cursor = conn.cursor()
-    
-    if model_id:
-        cursor.execute("""
-            SELECT * FROM calibration_tests
-            WHERE model_id = ?
-            ORDER BY timestamp DESC
-            LIMIT ?
-        """, (model_id, limit))
-    else:
-        cursor.execute("""
-            SELECT * FROM calibration_tests
-            ORDER BY timestamp DESC
-            LIMIT ?
-        """, (limit,))
-    
-    results = [dict(row) for row in cursor.fetchall()]
-    conn.close()
-    return results
-
-
-def record_handoff_trigger(pattern_type: str, pattern_description: str, confidence: float = 0.5):
-    """Record or update a handoff trigger pattern"""
-    db_path = get_metrics_db_path()
-    conn = sqlite3.connect(str(db_path))
-    cursor = conn.cursor()
-    
-    # Check if pattern exists
     cursor.execute("""
-        SELECT id, trigger_count FROM handoff_triggers
-        WHERE pattern_type = ? AND pattern_description = ?
-    """, (pattern_type, pattern_description))
-    
-    existing = cursor.fetchone()
-    
-    if existing:
-        cursor.execute("""
-            UPDATE handoff_triggers
-            SET trigger_count = trigger_count + 1,
-                last_triggered = ?,
-                confidence = ?
-            WHERE id = ?
-        """, (datetime.now().isoformat(), confidence, existing[0]))
-    else:
-        cursor.execute("""
-            INSERT INTO handoff_triggers
-            (pattern_type, pattern_description, trigger_count, last_triggered, confidence)
-            VALUES (?, ?, 1, ?, ?)
-        """, (pattern_type, pattern_description, datetime.now().isoformat(), confidence))
+        INSERT OR REPLACE INTO calibration_tests
+        (test_id, model_id, prompt_category, prompt, local_response, quality_score,
+         evaluation_notes, tokens_per_second, passed)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, (test_id, model_id, prompt_category, prompt, local_response, quality_score,
+           evaluation_notes, tokens_per_second, passed))
     
     conn.commit()
     conn.close()
 
 
-def get_handoff_triggers(active_only: bool = True) -> List[Dict]:
-    """Get recorded handoff triggers"""
+def get_calibration_results(
+    model_id: Optional[str] = None,
+    limit: int = 50
+) -> List[Dict[str, Any]]:
+    """Get calibration test results."""
     db_path = get_metrics_db_path()
     if not db_path.exists():
         return []
@@ -351,112 +236,135 @@ def get_handoff_triggers(active_only: bool = True) -> List[Dict]:
     conn.row_factory = sqlite3.Row
     cursor = conn.cursor()
     
-    if active_only:
-        cursor.execute("""
-            SELECT * FROM handoff_triggers
-            WHERE active = 1
-            ORDER BY trigger_count DESC
-        """)
-    else:
-        cursor.execute("""
-            SELECT * FROM handoff_triggers
-            ORDER BY trigger_count DESC
-        """)
+    query = "SELECT * FROM calibration_tests"
+    params = []
     
-    results = [dict(row) for row in cursor.fetchall()]
+    if model_id:
+        query += " WHERE model_id = ?"
+        params.append(model_id)
+    
+    query += " ORDER BY timestamp DESC LIMIT ?"
+    params.append(limit)
+    
+    cursor.execute(query, params)
+    rows = cursor.fetchall()
     conn.close()
-    return results
+    
+    return [dict(row) for row in rows]
+
+
+def record_handoff_trigger(
+    pattern_type: str,
+    pattern_description: str,
+    confidence: float
+):
+    """Record a handoff trigger pattern."""
+    db_path = get_metrics_db_path()
+    conn = sqlite3.connect(str(db_path))
+    cursor = conn.cursor()
+    
+    cursor.execute("""
+        INSERT INTO handoff_triggers
+        (pattern_type, pattern_description, confidence)
+        VALUES (?, ?, ?)
+    """, (pattern_type, pattern_description, confidence))
+    
+    conn.commit()
+    conn.close()
+
+
+def get_handoff_triggers(active_only: bool = True) -> List[Dict[str, Any]]:
+    """Get recorded handoff trigger patterns."""
+    db_path = get_metrics_db_path()
+    if not db_path.exists():
+        return []
+    
+    conn = sqlite3.connect(str(db_path))
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+    
+    query = "SELECT * FROM handoff_triggers"
+    params = []
+    
+    if active_only:
+        query += " WHERE is_active = 1"
+    
+    query += " ORDER BY confidence DESC"
+    
+    cursor.execute(query, params)
+    rows = cursor.fetchall()
+    conn.close()
+    
+    return [dict(row) for row in rows]
 
 
 def evaluate_response_heuristic(
     prompt: str,
     response: str,
-    category: str
+    category: str = "general"
 ) -> Dict[str, Any]:
-    """
-    Evaluate response quality using heuristics.
+    """Evaluate response quality using heuristics.
     
-    Returns a score from 0.0 to 1.0 with evaluation notes.
+    Returns score (0.0-1.0), criteria scores, notes, and pass status.
     """
-    evaluation = {
-        "score": 0.0,
-        "notes": [],
-        "criteria_scores": {}
+    criteria_scores = {}
+    
+    # Accuracy: Check for common error patterns
+    accuracy_score = 0.7  # Baseline
+    if len(response) < 10:
+        accuracy_score = 0.3  # Too short
+    elif "i don't know" in response.lower() or "i cannot" in response.lower():
+        accuracy_score = 0.5  # Uncertain
+    elif "error" in response.lower() or "sorry" in response.lower():
+        accuracy_score = 0.6  # Acknowledges issues
+    
+    # Completeness: Check response length and structure
+    response_length = len(response.split())
+    if response_length < 10:
+        completeness_score = 0.4
+    elif response_length < 50:
+        completeness_score = 0.6
+    elif response_length < 200:
+        completeness_score = 0.8
+    else:
+        completeness_score = 0.85
+    
+    # Clarity: Check for formatting and structure
+    clarity_score = 0.7  # Baseline
+    if "\n" in response:
+        clarity_score += 0.1  # Has structure
+    if response.count(".") >= 3:
+        clarity_score += 0.05  # Multiple sentences
+    clarity_score = min(clarity_score, 1.0)
+    
+    # Relevance: Simple check for prompt keywords
+    prompt_keywords = set(w.lower() for w in prompt.split() if len(w) > 3)
+    response_words = set(w.lower() for w in response.split())
+    overlap = len(prompt_keywords & response_words)
+    relevance_score = min(overlap / max(len(prompt_keywords), 1) * 0.8 + 0.2, 1.0)
+    
+    # Formatting: Check for proper punctuation
+    formatting_score = 0.5
+    if response.endswith(".") or response.endswith("!") or response.endswith("?"):
+        formatting_score += 0.3
+    if response[0].isupper():
+        formatting_score += 0.2
+    
+    criteria_scores["accuracy"] = accuracy_score
+    criteria_scores["completeness"] = completeness_score
+    criteria_scores["clarity"] = clarity_score
+    criteria_scores["relevance"] = relevance_score
+    criteria_scores["formatting"] = formatting_score
+    
+    # Calculate weighted score
+    weighted_score = sum(
+        criteria_scores[criterion] * QUALITY_RUBRIC[criterion]["weight"]
+        for criterion in criteria_scores
+    )
+    
+    return {
+        "score": min(weighted_score, 1.0),
+        "criteria_scores": criteria_scores,
+        "passed": weighted_score >= 0.6,
+        "notes": f"Response length: {response_length} words. Accuracy: {accuracy_score:.2f}, Completeness: {completeness_score:.2f}, Clarity: {clarity_score:.2f}, Relevance: {relevance_score:.2f}, Formatting: {formatting_score:.2f}"
     }
-    
-    if not response or len(response.strip()) < 10:
-        evaluation["notes"].append("Response too short or empty")
-        return evaluation
-    
-    # Length appropriateness (not too short, not excessive)
-    response_len = len(response)
-    if response_len < 50:
-        evaluation["criteria_scores"]["length"] = 0.3
-        evaluation["notes"].append("Response may be too brief")
-    elif response_len < 100:
-        evaluation["criteria_scores"]["length"] = 0.6
-    elif response_len < 2000:
-        evaluation["criteria_scores"]["length"] = 1.0
-    else:
-        evaluation["criteria_scores"]["length"] = 0.8
-        evaluation["notes"].append("Response may be overly verbose")
-    
-    # Formatting quality
-    has_structure = any(marker in response for marker in ["\n\n", "1.", "- ", "* ", "##"])
-    if has_structure:
-        evaluation["criteria_scores"]["formatting"] = 0.9
-    else:
-        evaluation["criteria_scores"]["formatting"] = 0.6
-    
-    # Relevance (basic keyword matching)
-    prompt_keywords = set(prompt.lower().split())
-    response_keywords = set(response.lower().split())
-    overlap = len(prompt_keywords & response_keywords)
-    relevance_score = min(overlap / max(len(prompt_keywords), 1), 1.0)
-    evaluation["criteria_scores"]["relevance"] = relevance_score * 0.8 + 0.2
-    
-    # Category-specific checks
-    if category == "coding":
-        has_code = "```" in response or "def " in response or "function" in response
-        evaluation["criteria_scores"]["code_presence"] = 1.0 if has_code else 0.4
-        if not has_code:
-            evaluation["notes"].append("Expected code block not found")
-    
-    elif category == "reasoning":
-        has_reasoning = any(word in response.lower() for word in 
-                          ["because", "therefore", "since", "step", "first", "then"])
-        evaluation["criteria_scores"]["reasoning_markers"] = 1.0 if has_reasoning else 0.5
-        if not has_reasoning:
-            evaluation["notes"].append("Limited reasoning markers found")
-    
-    elif category == "writing":
-        # Check for British English indicators (if applicable)
-        british_markers = ["colour", "organise", "centre", "programme", "behaviour"]
-        has_british = any(word in response.lower() for word in british_markers)
-        # Not penalising if not British, just noting
-        if has_british:
-            evaluation["notes"].append("British English detected ✓")
-    
-    # Calculate overall score
-    scores = list(evaluation["criteria_scores"].values())
-    evaluation["score"] = sum(scores) / len(scores) if scores else 0.0
-    
-    # Determine pass/fail
-    evaluation["passed"] = evaluation["score"] >= 0.6
-    
-    return evaluation
-
-
-# Export functions for use in main server
-__all__ = [
-    'init_metrics_db',
-    'record_model_metric',
-    'get_model_metrics_summary',
-    'save_calibration_result',
-    'get_calibration_results',
-    'record_handoff_trigger',
-    'get_handoff_triggers',
-    'evaluate_response_heuristic',
-    'CALIBRATION_PROMPTS',
-    'QUALITY_RUBRIC'
-]
