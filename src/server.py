@@ -89,8 +89,8 @@ class PersonaConfig:
     max_tokens: int
 
 
-def detect_msty_installation() -> Optional[MstyInstallation]:
-    """Detect Msty installation."""
+def _find_msty_installation() -> Optional[MstyInstallation]:
+    """Detect Msty installation (internal helper — not an MCP tool)."""
     candidates = [
         Path.home() / "Library" / "Application Support" / "Msty",
         Path.home() / ".msty",
@@ -166,7 +166,7 @@ def get_bloom_evaluator():
 @mcp.tool()
 def detect_msty_installation() -> str:
     """Detect Msty installation and configuration paths."""
-    msty = detect_msty_installation()
+    msty = _find_msty_installation()
     if msty:
         return json.dumps({
             "found": True,
@@ -181,7 +181,7 @@ def detect_msty_installation() -> str:
 @mcp.tool()
 def read_msty_database(query: str, limit: int = 100) -> str:
     """Query Msty SQLite database directly."""
-    msty = detect_msty_installation()
+    msty = _find_msty_installation()
     if not msty:
         return json.dumps({"error": "Msty not found"}, indent=2)
     
@@ -204,7 +204,7 @@ def read_msty_database(query: str, limit: int = 100) -> str:
 @mcp.tool()
 def list_configured_tools() -> str:
     """List all Msty configured tools."""
-    msty = detect_msty_installation()
+    msty = _find_msty_installation()
     if not msty:
         return json.dumps({"error": "Msty not found"}, indent=2)
     
@@ -253,7 +253,7 @@ def get_model_providers() -> str:
 @mcp.tool()
 def analyse_msty_health() -> str:
     """Get comprehensive Msty system health report."""
-    msty = detect_msty_installation()
+    msty = _find_msty_installation()
     
     service_status = {
         "local_ai": check_service_available(MSTY_AI_PORT),
