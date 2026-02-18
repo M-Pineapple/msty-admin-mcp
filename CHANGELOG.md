@@ -88,11 +88,15 @@
 - `bloom_validate_model`: Validate model suitability
 
 ### Bug Fixes
+- Fixed `run_calibration_test` broken import referencing nonexistent `register_phase5_tools` — rewired to use `CALIBRATION_PROMPTS`, `evaluate_response_heuristic`, `init_metrics_db`, and `save_calibration_result` from `phase4_5_tools`
 - Fixed `evaluate_response_quality` criteria scoring
 - Fixed `import_tool_config` database transaction handling
 - Fixed `generate_persona` prompt injection vulnerability
 - Improved error handling for service connection timeouts
 - Fixed metrics database initialization on first run
+
+### Known Limitations
+- `chat_with_local_model`, `chat_with_mlx_model`, and `run_calibration_test` may timeout (30s) if the model is not already loaded in memory due to cold-start latency
 
 ### Documentation
 - Complete README.md rewrite with installation, usage, architecture
