@@ -253,7 +253,7 @@ bloom_check_handoff(
 
 ## Bloom Behavioral Evaluation
 
-Phase 6 introduces behavioral evaluation powered by [Anthropic's Bloom framework](https://github.com/anthropics/safety-research/tree/main/bloom). Rather than testing what a model knows, Bloom tests how it behaves — detecting failure modes like sycophancy, hallucination, and overconfidence that standard benchmarks miss.
+Phase 6 introduces behavioral evaluation powered by [Anthropic's Bloom framework]([https://github.com/anthropics/safety-research/tree/main/bloom](https://www.anthropic.com/research/bloom)). Rather than testing what a model knows, Bloom tests how it behaves — detecting failure modes like sycophancy, hallucination, and overconfidence that standard benchmarks miss.
 
 ### How it works
 
