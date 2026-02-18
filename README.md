@@ -304,6 +304,21 @@ MIT License — See LICENSE file
 
 Contributions welcome! Please open issues or PRs on GitHub.
 
+## 💖 Support This Project
+
+If this project has helped enhance your development workflow or saved you time, please support :
+
+<a href="https://www.buymeacoffee.com/mpineapple" target="_blank"><img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" alt="Buy Me A Coffee" style="height: 60px !important;width: 217px !important;" ></a>
+
+Your support helps me:
+
+* Maintain and improve this project with new features
+* Keep the project open-source and free for everyone
+* Dedicate more time to addressing user requests and bug fixes
+* Explore new terminal integrations and command intelligence
+
+Thank you for considering supporting my work! 🙏
+
 ## Support
 
 For issues, questions, or feature requests, visit: https://github.com/M-Pineapple/msty-admin-mcp
