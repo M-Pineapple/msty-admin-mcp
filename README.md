@@ -6,6 +6,8 @@ Comprehensive MCP (Model Context Protocol) server for administering Msty Studio 
 
 **Latest**: v5.0.0 (2024) — Msty 2.4.0+ architecture, port-based service discovery, Bloom integration, Streamable HTTP transport
 
+> **New to Bloom?** Jump to the [Bloom Behavioral Evaluation](#bloom-behavioral-evaluation) section or read the [full Bloom guide](docs/BLOOM_GUIDE.md).
+
 ---
 
 ## Installation
@@ -249,6 +251,46 @@ bloom_check_handoff(
 
 ---
 
+## Bloom Behavioral Evaluation
+
+Phase 6 introduces behavioral evaluation powered by [Anthropic's Bloom framework](https://github.com/anthropics/safety-research/tree/main/bloom). Rather than testing what a model knows, Bloom tests how it behaves — detecting failure modes like sycophancy, hallucination, and overconfidence that standard benchmarks miss.
+
+### How it works
+
+Bloom sends your local model a series of prompts designed to trigger specific failure modes. An external judge model (Claude, via ANTHROPIC_API_KEY) then scores the responses. The results tell you whether a model is safe to use for a given task category, or whether it should hand off to Claude instead.
+
+### Quick example
+
+```python
+# 1. Check the model is suitable
+bloom_validate_model(model="llama3.2:7b")
+
+# 2. Evaluate a specific behavior
+bloom_evaluate_model(
+    model="llama3.2:7b",
+    behavior="sycophancy",
+    task_category="advisory_tasks",
+    total_evals=3,
+    max_turns=2
+)
+
+# 3. Should this model handle advisory work, or hand off to Claude?
+bloom_check_handoff(
+    model="llama3.2:7b",
+    task_category="advisory_tasks"
+)
+```
+
+### What Bloom evaluates
+
+Eight behaviors are tested out of the box: sycophancy, hallucination, overconfidence, scope creep, task quality degradation, certainty calibration, context window degradation, and instruction following. Each maps to one of four task categories (research analysis, data processing, advisory tasks, general tasks) with defined quality thresholds and three-tier handoff triggers.
+
+### Learn more
+
+For the full walkthrough — including all tool parameters, behavior descriptions, threshold tables, practical workflows, customisation, and troubleshooting — see the **[Bloom Knowledge Base Guide](docs/BLOOM_GUIDE.md)**.
+
+---
+
 ## Performance Expectations
 
 ### Apple Silicon (M1/M2/M3)
@@ -277,7 +319,7 @@ bloom_check_handoff(
 **A**: No, v5.0.0 requires Msty 2.4.0+ due to port-based discovery. For older Msty versions, use v4.x.
 
 ### Q: What's the Bloom integration?
-**A**: Anthropic's Bloom framework for evaluating local LLM behaviors (sycophancy, hallucination, overconfidence, etc.). Requires ANTHROPIC_API_KEY.
+**A**: Anthropic's Bloom framework for evaluating local LLM behaviors (sycophancy, hallucination, overconfidence, etc.). Requires ANTHROPIC_API_KEY. See the [Bloom section](#bloom-behavioral-evaluation) above or the [full guide](docs/BLOOM_GUIDE.md) for details.
 
 ### Q: Can I run this remotely?
 **A**: Yes, use `--transport streamable-http` to expose the MCP server as HTTP endpoint.
@@ -288,8 +330,8 @@ bloom_check_handoff(
 ### Q: Where are metrics stored?
 **A**: SQLite database at `~/.msty-admin/msty_admin_metrics.db`. Auto-created on first run.
 
-### Q: Can I customize Bloom behaviors?
-**A**: Yes, edit `src/bloom/cv_behaviors.py` to add custom behaviors or modify quality thresholds.
+### Q: Can I customise Bloom behaviors?
+**A**: Yes. See the [customisation section](docs/BLOOM_GUIDE.md#customisation) in the Bloom guide for adding behaviors, adjusting thresholds, and creating new task categories.
 
 ### Q: Does this require an Anthropic API key?
 **A**: Only for Bloom evaluation tools (Phase 6). Other 30 tools work without it.
