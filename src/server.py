@@ -22,6 +22,8 @@ import sqlite3
 import argparse
 import asyncio
 import socket
+import uuid
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, Dict, List, Any
@@ -580,26 +582,139 @@ def suggest_persona_improvements() -> str:
 @mcp.tool()
 def run_calibration_test(model_id: Optional[str] = None, category: str = "general") -> str:
     """Run calibration test on a model."""
-    from src.phase4_5_tools import register_phase5_tools
-    
-    # Create a mock mcp object for tool registration
-    class MockMCP:
-        def tool(self):
-            return lambda f: f
-    
-    mock_mcp = MockMCP()
-    phase5_tools = register_phase5_tools(
-        mock_mcp, make_api_request, lambda p: check_service_available(p),
-        MSTY_AI_PORT, check_service_available
+    from src.phase4_5_tools import (
+        CALIBRATION_PROMPTS,
+        evaluate_response_heuristic,
+        init_metrics_db,
+        save_calibration_result,
     )
-    
-    if "run_calibration_test" in phase5_tools:
-        return phase5_tools["run_calibration_test"](
-            model_id=model_id,
-            category=category
+
+    # Determine which model to test
+    target_model = model_id
+    if not target_model:
+        # Auto-detect: try to find a running model
+        if check_service_available(MSTY_AI_PORT):
+            models_resp = make_api_request("/v1/models", port=MSTY_AI_PORT)
+            if models_resp.get("success"):
+                model_list = models_resp.get("data", {}).get("data", [])
+                if model_list:
+                    target_model = model_list[0].get("id", "unknown")
+
+    if not target_model:
+        return json.dumps({
+            "error": "No model specified and no models detected. Provide model_id or ensure a model is available.",
+        }, indent=2)
+
+    # Select prompts for the category
+    if category == "general":
+        # Pick one prompt from each available category
+        test_prompts = []
+        for cat, prompts in CALIBRATION_PROMPTS.items():
+            if prompts:
+                test_prompts.append({"category": cat, "prompt": prompts[0]})
+    elif category in CALIBRATION_PROMPTS:
+        test_prompts = [
+            {"category": category, "prompt": p}
+            for p in CALIBRATION_PROMPTS[category]
+        ]
+    else:
+        return json.dumps({
+            "error": f"Unknown category '{category}'",
+            "available": list(CALIBRATION_PROMPTS.keys()) + ["general"],
+        }, indent=2)
+
+    # Initialise metrics DB
+    try:
+        init_metrics_db()
+    except Exception:
+        pass  # Non-fatal — we can still run without persistence
+
+    results = []
+    total_score = 0.0
+
+    for item in test_prompts:
+        test_id = str(uuid.uuid4())
+        prompt_text = item["prompt"]
+        prompt_cat = item["category"]
+
+        # Send prompt to the model
+        start_time = time.time()
+        api_response = make_api_request(
+            "/v1/chat/completions",
+            port=MSTY_AI_PORT,
+            method="POST",
+            data={
+                "model": target_model,
+                "messages": [{"role": "user", "content": prompt_text}],
+                "stream": False,
+            },
+            timeout=30,
         )
-    
-    return json.dumps({"status": "calibration_test_executed"}, indent=2)
+        elapsed = time.time() - start_time
+
+        if not api_response.get("success"):
+            results.append({
+                "test_id": test_id,
+                "category": prompt_cat,
+                "prompt_preview": prompt_text[:80],
+                "error": api_response.get("error", "Request failed"),
+            })
+            continue
+
+        # Extract the model's response text
+        resp_data = api_response.get("data", {})
+        choices = resp_data.get("choices", [])
+        model_response = ""
+        if choices:
+            model_response = choices[0].get("message", {}).get("content", "")
+
+        # Calculate tokens/second estimate
+        completion_tokens = resp_data.get("usage", {}).get("completion_tokens", len(model_response.split()))
+        tps = completion_tokens / elapsed if elapsed > 0 else 0
+
+        # Evaluate quality
+        evaluation = evaluate_response_heuristic(prompt_text, model_response, prompt_cat)
+
+        # Persist result (best-effort)
+        try:
+            save_calibration_result(
+                test_id=test_id,
+                model_id=target_model,
+                prompt_category=prompt_cat,
+                prompt=prompt_text,
+                local_response=model_response[:500],
+                quality_score=evaluation["score"],
+                evaluation_notes=evaluation["notes"],
+                tokens_per_second=tps,
+                passed=evaluation["passed"],
+            )
+        except Exception:
+            pass
+
+        total_score += evaluation["score"]
+        results.append({
+            "test_id": test_id,
+            "category": prompt_cat,
+            "prompt_preview": prompt_text[:80],
+            "quality_score": round(evaluation["score"], 3),
+            "passed": evaluation["passed"],
+            "tokens_per_second": round(tps, 1),
+            "latency_seconds": round(elapsed, 2),
+        })
+
+    avg_score = total_score / len(results) if results else 0
+    passed_count = sum(1 for r in results if r.get("passed"))
+
+    return json.dumps({
+        "model": target_model,
+        "category": category,
+        "tests_run": len(results),
+        "tests_passed": passed_count,
+        "average_score": round(avg_score, 3),
+        "overall_passed": avg_score >= 0.6,
+        "results": results,
+        "timestamp": datetime.now().isoformat(),
+    }, indent=2)
 
 
 @mcp.tool()
