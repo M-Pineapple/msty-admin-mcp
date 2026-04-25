@@ -1,4 +1,10 @@
+<div align="center">
+
+<img src="assets/logo.svg" alt="Msty Admin MCP logo" width="240"/>
+
 # Msty Admin MCP — v5.0.0
+
+</div>
 
 Comprehensive MCP (Model Context Protocol) server for administering Msty Studio Desktop with 36 tools across 6 phases, Bloom behavioral evaluation, and support for four service backends (Ollama, MLX, LLaMA.cpp, Vibe CLI Proxy).
 
