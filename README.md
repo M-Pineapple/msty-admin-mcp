@@ -1,3 +1,5 @@
+[![MseeP.ai Security Assessment Badge](https://mseep.net/pr/m-pineapple-msty-admin-mcp-badge.png)](https://mseep.ai/app/m-pineapple-msty-admin-mcp)
+
 <div align="center">
 
 <img src="assets/logo.svg" alt="Msty Admin MCP logo" width="240"/>
