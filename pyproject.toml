@@ -4,8 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "msty-admin-mcp"
-version = "5.0.0"
-description = "Comprehensive MCP server for administering Msty Studio Desktop with 36 tools, Bloom integration, and multi-backend support"
+version = "6.0.0"
+description = "Comprehensive MCP server for administering Msty Studio Desktop 2.9+ with 55 tools, Studio entity inventory, insights analytics, Nexus bridge, and Bloom evaluation"
 readme = "README.md"
 requires-python = ">=3.10"
 license = {text = "MIT"}

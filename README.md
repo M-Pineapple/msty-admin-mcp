@@ -2,15 +2,15 @@
 
 <img src="assets/logo.svg" alt="Msty Admin MCP logo" width="240"/>
 
-# Msty Admin MCP — v5.0.0
+# Msty Admin MCP — v6.0.0
 
 </div>
 
-Comprehensive MCP (Model Context Protocol) server for administering Msty Studio Desktop with 36 tools across 6 phases, Bloom behavioral evaluation, and support for four service backends (Ollama, MLX, LLaMA.cpp, Vibe CLI Proxy).
+Comprehensive MCP server for administering **Msty Studio Desktop 2.9+** with **55 tools** across 8 phases: real Studio path/DB detection, entity inventory (Context Studio, Knowledge Stacks, Agent Mode, Turnstiles, …), insights analytics, Nexus bridge, Bloom evaluation, and multi-backend local inference.
 
-**Requirements**: Python 3.10+, MCP SDK v1.0.0+
+**Requirements**: Python 3.10+, MCP SDK v1.0.0+, psutil 5.9.0+
 
-**Latest**: v5.0.0 (2024) — Msty 2.4.0+ architecture, port-based service discovery, Bloom integration, Streamable HTTP transport
+**Latest**: v6.0.0 (2026-08-01) — Studio 2.9 path/DB fix, Phase 7 inventory, Phase 8 Nexus, insights-backed analytics
 
 > **New to Bloom?** Jump to the [Bloom Behavioral Evaluation](#bloom-behavioral-evaluation) section or read the [full Bloom guide](docs/BLOOM_GUIDE.md).
 
@@ -35,6 +35,7 @@ msty-admin-mcp --transport streamable-http  # Runs on http://localhost:8000
 git clone https://github.com/M-Pineapple/msty-admin-mcp
 cd msty-admin-mcp
 pip install -e .
+pytest tests/ -v
 ```
 
 ---
@@ -47,11 +48,12 @@ Environment variables (all optional, sensible defaults):
 # Msty installation host
 MSTY_HOST=127.0.0.1
 
-# Service backend ports
+# Service backend ports (also read from Studio Gifnoc.nosj when present)
 MSTY_AI_PORT=11964           # Local AI (Ollama)
 MSTY_MLX_PORT=11973          # MLX service
 MSTY_LLAMACPP_PORT=11454     # LLaMA.cpp service
 MSTY_VIBE_PORT=8317          # Vibe CLI Proxy
+MSTY_NEXUS_PORT=11434        # Msty Nexus OpenAI-compatible gateway
 
 # Service timeout
 MSTY_TIMEOUT=10              # Seconds
@@ -64,283 +66,125 @@ ANTHROPIC_API_KEY=sk-...     # Required for Bloom judge model
 
 ## Architecture
 
-### Service Discovery (Msty 2.4.0+)
+### Studio 2.9+ data layout
 
-Msty 2.4.0+ exposes services via ports. The MCP server auto-detects available services:
+Msty Studio no longer uses a top-level `msty.db`. The workspace SQLite lives under the Chromium File System API path, for example:
+
+```
+~/Library/Application Support/MstyStudio/
+├── Gifnoc.nosj                          # service config (ports / model paths)
+├── models/  models-mlx/
+└── File System/000/t/00/00000000        # Drizzle SQLite workspace DB
+```
+
+The MCP auto-detects `/Applications/MstyStudio.app`, reads the bundle version, resolves the SQLite blob, and opens it **read-only**.
+
+### Service discovery
 
 ```
 Msty Studio Desktop
 ├── Local AI (Ollama) → port 11964
 ├── MLX → port 11973
 ├── LLaMA.cpp → port 11454
-└── Vibe CLI Proxy → port 8317
+├── Vibe CLI Proxy → port 8317
+└── Msty Nexus (optional) → port 11434
 
-         ↓ (port-based discovery)
+         ↓
 
 MCP Server (stdio / HTTP)
-├── Phase 1: Foundational (6 tools)
-├── Phase 2: Configuration (4 tools)
-├── Phase 3: Service Integration (11 tools)
-├── Phase 4: Intelligence (5 tools)
-├── Phase 5: Calibration (4 tools)
-└── Phase 6: Bloom Evaluation (6 tools)
-```
-
-### Data Storage
-
-Metrics and calibration results stored in SQLite:
-- **Location**: `~/.msty-admin/msty_admin_metrics.db`
-- **Tables**: `model_metrics`, `calibration_tests`, `handoff_triggers`, `conversation_analytics`
-- **Auto-init**: Database created on first tool run
-
----
-
-## Use Cases
-
-### 1. Database Inspection
-
-Query Msty's internal SQLite database directly:
-
-```python
-# Get all configured tools
-read_msty_database(
-    query="SELECT name, version FROM tools"
-)
-```
-
-### 2. Health Monitoring
-
-Check system health across all components:
-
-```python
-analyse_msty_health()
-# Returns: CPU, memory, database size, service connectivity, recent errors
-```
-
-### 3. Configuration Sync
-
-Export/import Msty configurations:
-
-```python
-# Export current configuration
-export_tool_config(tool_name="research_assistant")
-
-# Import configuration
-import_tool_config(tool_data={...})
-```
-
-### 4. Multi-Backend Orchestration
-
-Chat with different model backends transparently:
-
-```python
-# Chat with Ollama
-chat_with_local_model(model="llama3.2:7b", messages=[...])
-
-# Chat with MLX
-chat_with_mlx_model(model="mistral", messages=[...])
-
-# Chat with LLaMA.cpp
-chat_with_llamacpp_model(model="dolphin", messages=[...])
-```
-
-### 5. Performance Analytics
-
-Analyze model performance over time:
-
-```python
-get_model_performance_metrics(
-    model_id="llama3.2:7b",
-    timeframe="7d"
-)
-# Returns: latency, throughput, quality scores, error rates
-```
-
-### 6. Model Calibration
-
-Test and calibrate local models:
-
-```python
-run_calibration_test(
-    model_id="llama3.2:7b",
-    category="reasoning",
-    passing_threshold=0.6
-)
-# Returns: quality scores, pass rate, recommendations
-```
-
-### 7. Tiered AI Workflow
-
-Evaluate when to hand off tasks to Claude:
-
-```python
-identify_handoff_triggers(
-    analyse_recent=True
-)
-# Returns: patterns where local models underperform
-
-run_calibration_test(model_id="llama3.2:3b", category="analysis")
-evaluate_response_quality(prompt="...", response="...", category="analysis")
-```
-
-### 8. Behavioral Evaluation (Bloom)
-
-Evaluate problematic behaviors using Anthropic's Bloom framework:
-
-```python
-bloom_evaluate_model(
-    model="llama3.2:7b",
-    behavior="sycophancy",
-    task_category="advisory_tasks",
-    total_evals=3
-)
-# Returns: evaluation results with quality scores
-
-bloom_check_handoff(
-    model="llama3.2:3b",
-    task_category="research_analysis"
-)
-# Returns: handoff recommendation with confidence
+├── Phase 1: Foundational (6)
+├── Phase 2: Configuration (4)
+├── Phase 3: Service Integration (11)
+├── Phase 4: Intelligence (5)
+├── Phase 5: Calibration (4)
+├── Phase 6: Bloom Evaluation (6)
+├── Phase 7: Studio Inventory (15)
+└── Phase 8: Nexus Bridge (4)
 ```
 
 ---
 
-## Tools Summary (36 Total)
+## Tools Summary (55 Total)
 
-### Phase 1: Foundational (6 tools)
-- `detect_msty_installation`: Find Msty installation and paths
-- `read_msty_database`: Query Msty SQLite database
-- `list_configured_tools`: List all configured tools
-- `get_model_providers`: List available model providers
-- `analyse_msty_health`: Comprehensive system health
-- `get_server_status`: MCP server status
+### Phase 1: Foundational (6)
+- `detect_msty_installation` — app, version, DB path, ports
+- `read_msty_database` — `stats` / `tables` / read-only SQL
+- `list_configured_tools` — Toolbox MCP tools
+- `get_model_providers` — services + Studio providers (keys redacted)
+- `analyse_msty_health` — install + DB + services
+- `get_server_status` — MCP status
 
-### Phase 2: Configuration (4 tools)
-- `export_tool_config`: Export tool configurations
-- `sync_claude_preferences`: Sync Claude preferences
-- `generate_persona`: Create AI personas
-- `import_tool_config`: Import configurations
+### Phase 2: Configuration (4)
+- `export_tool_config` — export a tool by name/id
+- `sync_claude_preferences` — Claude ↔ Msty delta report
+- `generate_persona` — persona JSON for Persona Studio
+- `import_tool_config` — validate import (live DB writes refused by default)
 
-### Phase 3: Service Integration (11 tools)
-- `get_service_status`: Status of all services
-- `list_available_models`: List models across services
-- `query_local_ai_service`: Query Local AI/Ollama
-- `chat_with_local_model`: Chat with Local AI models
-- `recommend_model`: Get model recommendations
-- `list_mlx_models`: List MLX models
-- `chat_with_mlx_model`: Chat with MLX models
-- `list_llamacpp_models`: List LLaMA.cpp models
-- `chat_with_llamacpp_model`: Chat with LLaMA.cpp models
-- `get_vibe_proxy_status`: Check Vibe proxy
-- `query_vibe_proxy`: Query Vibe proxy
+### Phase 3: Service Integration (11)
+- `get_service_status`, `list_available_models`, `query_local_ai_service`
+- `chat_with_local_model`, `recommend_model`
+- `list_mlx_models`, `chat_with_mlx_model`
+- `list_llamacpp_models`, `chat_with_llamacpp_model`
+- `get_vibe_proxy_status`, `query_vibe_proxy`
 
-### Phase 4: Intelligence (5 tools)
-- `get_model_performance_metrics`: Model performance analytics
-- `analyse_conversation_patterns`: Conversation analysis
-- `compare_model_responses`: Compare model outputs
-- `optimise_knowledge_stacks`: Stack optimization
-- `suggest_persona_improvements`: Persona suggestions
+### Phase 4: Intelligence (5)
+- `get_model_performance_metrics` — from Studio `insightsLanguageModelUsage`
+- `analyse_conversation_patterns`
+- `compare_model_responses`
+- `optimise_knowledge_stacks` — live Next Gen / draft / compose status
+- `suggest_persona_improvements`
 
-### Phase 5: Calibration (4 tools)
-- `run_calibration_test`: Test model quality
-- `evaluate_response_quality`: Score responses (0.0-1.0)
-- `identify_handoff_triggers`: Find escalation patterns
-- `get_calibration_history`: Historical results
+### Phase 5: Calibration (4)
+- `run_calibration_test`, `evaluate_response_quality`
+- `identify_handoff_triggers`, `get_calibration_history`
 
-### Phase 6: Bloom Evaluation (6 tools)
-- `bloom_evaluate_model`: Run Bloom evaluation
-- `bloom_check_handoff`: Check handoff recommendation
-- `bloom_get_history`: Get past evaluations
-- `bloom_list_behaviors`: List evaluable behaviors
-- `bloom_get_thresholds`: Get quality thresholds
-- `bloom_validate_model`: Validate model suitability
+### Phase 6: Bloom Evaluation (6)
+- `bloom_evaluate_model`, `bloom_check_handoff`, `bloom_get_history`
+- `bloom_list_behaviors`, `bloom_get_thresholds`, `bloom_validate_model`
+
+### Phase 7: Studio 2.9 Inventory (15)
+- `list_studio_catalogue`, `list_workspaces`, `list_personas`
+- `list_shadow_personas`, `list_crews`, `list_knowledge_stacks`
+- `list_turnstiles`, `list_skills`, `list_live_contexts`, `list_prompts`
+- `list_context_studio`, `list_agent_plans`
+- `get_studio_entity`, `get_schema_migrations`, `export_workflow_pack`
+
+### Phase 8: Nexus Bridge (4)
+- `detect_nexus`, `list_nexus_models`, `query_nexus`, `get_insights_usage`
 
 ---
 
 ## Bloom Behavioral Evaluation
 
-Phase 6 introduces behavioral evaluation powered by [Anthropic's Bloom framework]([https://github.com/anthropics/safety-research/tree/main/bloom](https://www.anthropic.com/research/bloom)). Rather than testing what a model knows, Bloom tests how it behaves — detecting failure modes like sycophancy, hallucination, and overconfidence that standard benchmarks miss.
+Phase 6 introduces behavioral evaluation powered by [Anthropic's Bloom framework](https://www.anthropic.com/research/bloom). Rather than testing what a model knows, Bloom tests how it behaves — detecting failure modes like sycophancy, hallucination, and overconfidence that standard benchmarks miss.
 
-### How it works
-
-Bloom sends your local model a series of prompts designed to trigger specific failure modes. An external judge model (Claude, via ANTHROPIC_API_KEY) then scores the responses. The results tell you whether a model is safe to use for a given task category, or whether it should hand off to Claude instead.
-
-### Quick example
-
-```python
-# 1. Check the model is suitable
-bloom_validate_model(model="llama3.2:7b")
-
-# 2. Evaluate a specific behavior
-bloom_evaluate_model(
-    model="llama3.2:7b",
-    behavior="sycophancy",
-    task_category="advisory_tasks",
-    total_evals=3,
-    max_turns=2
-)
-
-# 3. Should this model handle advisory work, or hand off to Claude?
-bloom_check_handoff(
-    model="llama3.2:7b",
-    task_category="advisory_tasks"
-)
-```
-
-### What Bloom evaluates
-
-Eight behaviors are tested out of the box: sycophancy, hallucination, overconfidence, scope creep, task quality degradation, certainty calibration, context window degradation, and instruction following. Each maps to one of four task categories (research analysis, data processing, advisory tasks, general tasks) with defined quality thresholds and three-tier handoff triggers.
-
-### Learn more
-
-For the full walkthrough — including all tool parameters, behavior descriptions, threshold tables, practical workflows, customisation, and troubleshooting — see the **[Bloom Knowledge Base Guide](docs/BLOOM_GUIDE.md)**.
+See the **[Bloom Knowledge Base Guide](docs/BLOOM_GUIDE.md)**.
 
 ---
 
-## Performance Expectations
+## Testing
 
-### Apple Silicon (M1/M2/M3)
+```bash
+pytest tests/ -v
+```
 
-| Task | Model | Latency | Throughput |
-|------|-------|---------|------------|
-| Simple chat | llama3.2:3b | 200-300ms | 15-20 tok/s |
-| Complex reasoning | llama3.2:7b | 500-800ms | 8-12 tok/s |
-| Calibration test | llama3.2:7b | 5-10s | -- |
-| Bloom evaluation | llama3.2:7b | 30-60s | -- |
-
-### Hardware Recommendations
-
-- **Minimal**: 8GB RAM, M1 (for 3b models only)
-- **Standard**: 16GB RAM, M1/M2 (for up to 7b models)
-- **Optimal**: 32GB+ RAM, M2/M3 (for 13b+ models)
+v6 ships unit tests for path resolution, read-only SQL guards, redaction, inventory/analytics, and MCP tool JSON contracts. Live smoke on Studio 2.9.2 was verified during release.
 
 ---
 
 ## FAQ
 
-### Q: How does service discovery work?
-**A**: Msty 2.4.0+ exposes services on specific ports. The MCP server checks each port to detect available services. Fully automatic — no configuration needed.
+### Q: Why did detection fail on older MCP versions?
+**A**: v5 looked for `~/Library/Application Support/Msty/msty.db`. Studio 2.x stores data under `MstyStudio` and the Chromium File System SQLite path. v6 fixes this.
 
-### Q: Can I use this with Msty < 2.4.0?
-**A**: No, v5.0.0 requires Msty 2.4.0+ due to port-based discovery. For older Msty versions, use v4.x.
+### Q: Can I use this with Msty &lt; 2.4.0?
+**A**: No. v6 targets Studio 2.9+ (works on 2.4+ layouts when the File System DB is present). Use v4.x for older process-based detection.
 
-### Q: What's the Bloom integration?
-**A**: Anthropic's Bloom framework for evaluating local LLM behaviors (sycophancy, hallucination, overconfidence, etc.). Requires ANTHROPIC_API_KEY. See the [Bloom section](#bloom-behavioral-evaluation) above or the [full guide](docs/BLOOM_GUIDE.md) for details.
+### Q: Does this write to the Studio database?
+**A**: Inventory and analytics are read-only. `import_tool_config` refuses live writes by default because Studio may hold locks on the File System DB. Prefer Toolbox JSON import for writes.
 
-### Q: Can I run this remotely?
-**A**: Yes, use `--transport streamable-http` to expose the MCP server as HTTP endpoint.
-
-### Q: How do I know if a model should hand off to Claude?
-**A**: Use `bloom_check_handoff` or `identify_handoff_triggers` to detect patterns where local models underperform.
-
-### Q: Where are metrics stored?
-**A**: SQLite database at `~/.msty-admin/msty_admin_metrics.db`. Auto-created on first run.
-
-### Q: Can I customise Bloom behaviors?
-**A**: Yes. See the [customisation section](docs/BLOOM_GUIDE.md#customisation) in the Bloom guide for adding behaviors, adjusting thresholds, and creating new task categories.
-
-### Q: Does this require an Anthropic API key?
-**A**: Only for Bloom evaluation tools (Phase 6). Other 30 tools work without it.
+### Q: What's the Nexus integration?
+**A**: [Msty Nexus](https://msty.ai/nexus/) is the local runtime/gateway. Phase 8 detects it and lists models via its OpenAI-compatible endpoint (`MSTY_NEXUS_PORT`).
 
 ---
 
