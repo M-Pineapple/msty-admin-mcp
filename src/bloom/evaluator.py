@@ -79,11 +79,18 @@ class BloomEvaluator:
     
     def _find_bloom_path(self) -> Optional[str]:
         """Locate Bloom framework installation."""
-        candidates = [
-            Path.home() / "bloom",
-            Path.home() / "Github" / "bloom",
-            Path("/opt/bloom"),
-        ]
+        # Prefer BLOOM_PATH; otherwise check portable locations only (no machine-specific homes).
+        env_path = os.environ.get("BLOOM_PATH")
+        candidates = []
+        if env_path:
+            candidates.append(Path(env_path))
+        candidates.extend(
+            [
+                Path.home() / "bloom",
+                Path("/opt/bloom"),
+                Path.cwd() / "bloom",
+            ]
+        )
         
         for path in candidates:
             if path.exists() and (path / "run.py").exists():

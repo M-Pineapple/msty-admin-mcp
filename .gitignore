@@ -69,7 +69,8 @@ pip-delete-this-directory.txt
 *.bak
 *.backup
 
-# Personal configuration exports (may contain API keys)
+# Personal configuration exports (may contain absolute paths, emails, API keys)
+# Never commit these — keep local-only. Public docs use ~/ placeholders only.
 msty-import/
 export/
 config-backup/

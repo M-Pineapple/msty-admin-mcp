@@ -8,5 +8,5 @@ Tools:
 - optimise_knowledge_stacks
 - suggest_persona_improvements
 
-Created by Pineapple 🍍 AI Administration System
+Created by M-Pineapple 🍍
 """

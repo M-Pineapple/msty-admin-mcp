@@ -7,5 +7,5 @@ Tools:
 - identify_handoff_triggers
 - get_calibration_history
 
-Created by Pineapple 🍍 AI Administration System
+Created by M-Pineapple 🍍
 """

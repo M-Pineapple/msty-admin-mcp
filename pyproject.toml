@@ -10,7 +10,7 @@ readme = "README.md"
 requires-python = ">=3.10"
 license = {text = "MIT"}
 authors = [
-    {name = "M-Pineapple AI Administration System", email = "admin@pineapple.com"}
+    {name = "M-Pineapple 🍍", email = "128090761+M-Pineapple@users.noreply.github.com"}
 ]
 
 dependencies = [

@@ -5,7 +5,7 @@ Provides Anthropic's Bloom framework integration for evaluating local Ollama mod
 Tests for problematic behaviors like sycophancy, hallucination, overconfidence.
 
 Version: 1.0.0
-Author: M-Pineapple AI Administration System
+Author: M-Pineapple 🍍
 """
 
 from .evaluator import BloomEvaluator

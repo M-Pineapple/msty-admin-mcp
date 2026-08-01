@@ -10,11 +10,11 @@ Phase 3: Automation Bridge (Sidecar Integration)
 Phase 4: Intelligence Layer (Analytics)
 Phase 5: Tiered AI Workflow (Calibration)
 
-Created by Pineapple 🍍
+Created by M-Pineapple 🍍
 """
 
-__version__ = "4.0.0"
-__author__ = "Pineapple 🍍"
+__version__ = "6.0.0"
+__author__ = "M-Pineapple 🍍"
 
 from .server import mcp, main
 

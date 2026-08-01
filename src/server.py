@@ -5,7 +5,7 @@ Msty Admin MCP Server — v6.0.0
 Administer Msty Studio Desktop 2.9+ with real path/DB detection, entity inventory,
 insights analytics, workflow export, and Nexus bridge — plus Bloom/calibration.
 
-Author: M-Pineapple AI Administration System
+Author: M-Pineapple 🍍
 """
 
 from __future__ import annotations
