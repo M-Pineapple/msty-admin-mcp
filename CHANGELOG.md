@@ -1,5 +1,47 @@
 # Msty Admin MCP — Changelog
 
+## v6.0.0 — 2026-08-01
+
+### Major Changes
+
+#### P0: Studio 2.9 path and database detection
+- Detect `/Applications/MstyStudio.app` and read version from `Info.plist`
+- Resolve workspace SQLite under Chromium File System (`…/File System/000/t/00/00000000`)
+- Read service ports/model paths from `Gifnoc.nosj`
+- Open Studio DB **read-only** with SELECT/WITH/PRAGMA-only query guard
+- Precise API-key redaction that does not corrupt `promptTokens` / `completionTokens`
+
+#### Phase 7: Studio entity inventory (15 tools)
+- Catalogue, workspaces, personas, shadow personas, crews
+- Knowledge Stacks, turnstiles, skills, live contexts, prompts
+- Context Studio attachments/folders, Agent Mode plans
+- `get_studio_entity`, `get_schema_migrations`, `export_workflow_pack`
+
+#### Phase 8: Nexus bridge (4 tools)
+- `detect_nexus`, `list_nexus_models`, `query_nexus`, `get_insights_usage`
+- `MSTY_NEXUS_PORT` (default 11434)
+
+#### Intelligence layer now uses live Studio data
+- `get_model_performance_metrics` / insights from `insightsLanguageModelUsage`
+- `optimise_knowledge_stacks` and `suggest_persona_improvements` no longer stubs
+- `recommend_model` prefers 30-day insights when present
+- `analyse_conversation_patterns` reads conversation + insights tables
+
+### Tool Summary (55 Total)
+Phases 1–6 retained and rewired; Phase 7 (15) + Phase 8 (4) added.
+
+### Tests
+- Rewrote `tests/test_server.py` for v6 contracts
+- 32 unit tests covering paths, DB safety, inventory, analytics, MCP JSON tools
+- Live smoke verified on Studio **2.9.2** (detection, tools, personas, 68 insight rows)
+
+### Breaking
+- Requires Msty Studio Desktop layout used by 2.4+ / 2.9 (File System SQLite)
+- `read_msty_database` default query mode is `stats` (or pass SQL / `tables`)
+- `import_tool_config` no longer writes the live Studio DB by default
+
+---
+
 ## v5.0.0 — 2024
 
 ### Major Changes
