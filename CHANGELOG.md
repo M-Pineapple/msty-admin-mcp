@@ -1,5 +1,21 @@
 # Msty Admin MCP — Changelog
 
+## v6.1.0 — 2026-10-04
+
+### Added
+
+- `ask_frontier` on a one-tool server (`msty-frontier` / `python -m src.frontier_main`). A local model in Msty calls it. The tool runs `cursor-agent` in ask mode and returns the text in that Msty chat. A follow-up resumes the same Cursor chat.
+- Session id stored in `~/.msty-admin/frontier-session.json` (mode `0600`).
+- Optional `MSTY_FRONTIER_WORKSPACE` so the agent can read one project folder. The default folder is empty.
+- `CURSOR_API_KEY` (a Cursor **user** API key) is read from the server environment. It is not stored in this repo.
+
+### Notes
+
+- Ask mode does not send mail, move or delete files, or use trading tools.
+- The local-model toolset should contain only the frontier server. Other toolbox servers in the same toolset will be called as well.
+- The local model must emit a real tool call. A model that only writes prose never reaches Cursor. `identify_handoff_triggers` still only scores past Studio metrics. It does not send the question.
+- `cursor-agent status` does not show an API-key login. Ask mode uses the key when `CURSOR_API_KEY` is set.
+
 ## v6.0.0 — 2026-08-01
 
 ### Major Changes

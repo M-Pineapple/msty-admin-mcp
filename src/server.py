@@ -1,5 +1,5 @@
 """
-Msty Admin MCP Server — v6.0.0
+Msty Admin MCP Server — v6.1.0
 ===============================
 
 Administer Msty Studio Desktop 2.9+ with real path/DB detection, entity inventory,
@@ -41,8 +41,8 @@ from src.services import (
     service_status_map,
 )
 
-SERVER_VERSION = "6.0.0"
-TOOL_COUNT = 55
+SERVER_VERSION = "6.1.0"
+TOOL_COUNT = 56
 
 mcp = FastMCP("msty-admin-mcp", f"v{SERVER_VERSION}")
 
@@ -245,6 +245,7 @@ def get_server_status() -> str:
                 "phase_6_bloom": 6,
                 "phase_7_studio_inventory": 15,
                 "phase_8_nexus": 4,
+                "phase_9_frontier": 1,
             },
             "studio_target": "2.9+",
         }
@@ -977,6 +978,23 @@ def query_nexus(
 def get_insights_usage(model_id: Optional[str] = None, timeframe: str = "7d") -> str:
     """Alias for insights-backed usage analytics."""
     return _json(analytics.get_insights_usage(model_id=model_id, timeframe=timeframe))
+
+
+# ---------------------------------------------------------------------------
+# Phase 9 — Frontier handoff
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool()
+def ask_frontier(question: str) -> str:
+    """Answer a hard question. Call once, then stop."""
+    from src.frontier import ask_cursor_agent
+
+    try:
+        outcome = ask_cursor_agent(question)
+    except Exception as exc:
+        return f"Frontier handoff failed: {exc}"
+    return outcome.answer
 
 
 def main() -> None:
