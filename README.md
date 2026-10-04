@@ -2,15 +2,15 @@
 
 <img src="assets/logo.svg" alt="Msty Admin MCP logo" width="240"/>
 
-# Msty Admin MCP — v6.0.0
+# Msty Admin MCP — v6.1.0
 
 </div>
 
-Comprehensive MCP server for administering **Msty Studio Desktop 2.9+** with **55 tools** across 8 phases: real Studio path/DB detection, entity inventory (Context Studio, Knowledge Stacks, Agent Mode, Turnstiles, …), insights analytics, Nexus bridge, Bloom evaluation, and multi-backend local inference.
+Comprehensive MCP server for administering **Msty Studio Desktop 2.9+** with **56 tools** across 9 phases: real Studio path/DB detection, entity inventory (Context Studio, Knowledge Stacks, Agent Mode, Turnstiles, …), insights analytics, Nexus bridge, Bloom evaluation, multi-backend local inference, and a handoff from a local model to the Cursor agent on this Mac.
 
 **Requirements**: Python 3.10+, MCP SDK v1.0.0+, psutil 5.9.0+
 
-**Latest**: v6.0.0 (2026-08-01) — Studio 2.9 path/DB fix, Phase 7 inventory, Phase 8 Nexus, insights-backed analytics
+**Latest**: v6.1.0 (2026-10-04) — local models can hand a hard question to the Cursor agent on this Mac and see the answer in the same Msty chat.
 
 > **New to Bloom?** Jump to the [Bloom Behavioral Evaluation](#bloom-behavioral-evaluation) section or read the [full Bloom guide](docs/BLOOM_GUIDE.md).
 
@@ -99,12 +99,67 @@ MCP Server (stdio / HTTP)
 ├── Phase 5: Calibration (4)
 ├── Phase 6: Bloom Evaluation (6)
 ├── Phase 7: Studio Inventory (15)
-└── Phase 8: Nexus Bridge (4)
+├── Phase 8: Nexus Bridge (4)
+└── Phase 9: Frontier handoff (1)
 ```
 
 ---
 
-## Tools Summary (55 Total)
+## Hybrid local model and Cursor agent
+
+A local model does the ordinary work. When a question is past it, that model calls `ask_frontier`. The tool runs the Cursor agent on this machine and returns the answer in the same Msty chat. A follow-up resumes that Cursor chat.
+
+Use a **separate one-tool server** for the local-model chat. The full admin server has 56 tools. A small model will call those other tools (GitHub, search, schema, and so on) instead of waiting for the answer.
+
+### Fresh install
+
+1. Install this package and the Cursor agent CLI (`cursor-agent`). It must be on the PATH seen by Msty, or at `~/.local/bin/cursor-agent`. Login and API keys: [Cursor CLI authentication](https://cursor.com/docs/cli/reference/authentication).
+2. Create a **user** API key in Cursor Dashboard → API Keys. An admin key does not work. Do not commit the key and do not put it in this repo.
+3. In Msty, add a toolbox server named Frontier. From a source checkout:
+
+```json
+{
+  "command": "/absolute/path/to/venv/bin/python",
+  "args": ["-m", "src.frontier_main"],
+  "env": {
+    "PYTHONPATH": "/absolute/path/to/msty-admin-mcp",
+    "CURSOR_API_KEY": "your-user-api-key"
+  }
+}
+```
+
+After `pip install`, the console script `msty-frontier` is the same one-tool server. You can set `command` to that script and omit `PYTHONPATH`.
+
+4. Create a toolset that contains **only** this Frontier server. Do not put GitHub, Brave, Trello, or the full admin server in that toolset.
+5. On the local-model chat, select that toolset in the composer (the active-toolset control). The toolset stored on the chat is not what is sent if the composer still has another toolset selected.
+6. Quit Msty and open it again after any toolbox or environment change.
+7. Ask a question the local model cannot already answer. Success is one `ask_frontier` card, then the Cursor reply under it. A normal paragraph with no card means the model answered by itself and Cursor was not asked.
+
+### Optional project folder
+
+By default the Cursor agent reads an empty folder under `~/.msty-admin/frontier-workspace`. It cannot see your repositories. To let it read one project, set:
+
+```json
+"MSTY_FRONTIER_WORKSPACE": "/absolute/path/to/that/project"
+```
+
+Ask mode does not send mail, move or delete files, or use trading tools. It can read that folder.
+
+### Update from v6.0.0
+
+The admin server is unchanged for Studio inventory and the other 55 tools. Add the Frontier server and the one-server toolset as above. Do not point the local-model chat at the full `msty-admin-mcp` command.
+
+### Caveats
+
+- The local model must emit a real tool call. Some small models never do, and then no amount of "please call the tool" in the user message will reach Cursor. A model that can call tools will. It may rewrite your question into a search command. That is still a successful handoff if the card is `ask_frontier` and the text under it came from Cursor.
+- `cursor-agent status` can say "not logged in" while ask mode still works with `CURSOR_API_KEY`. The frontier process passes that variable as `--api-key`. A browser `cursor-agent login` in your terminal is not always visible to the process Msty starts.
+- Several `ask_frontier` calls in one reply share the first Cursor answer. They do not each start a new chat.
+- The last Cursor chat id is stored in `~/.msty-admin/frontier-session.json` (mode `0600`). Delete that file to start a fresh Cursor chat.
+- `identify_handoff_triggers` only scores past speed and latency. It does not send the question.
+
+---
+
+## Tools Summary (56 Total)
 
 ### Phase 1: Foundational (6)
 - `detect_msty_installation` — app, version, DB path, ports
@@ -152,6 +207,9 @@ MCP Server (stdio / HTTP)
 ### Phase 8: Nexus Bridge (4)
 - `detect_nexus`, `list_nexus_models`, `query_nexus`, `get_insights_usage`
 
+### Phase 9: Frontier handoff (1)
+- `ask_frontier` — hand one question to the Cursor agent on this machine and return the answer in the Msty chat. Use the one-tool server (`msty-frontier` or `python -m src.frontier_main`) for a local-model chat. See [Hybrid local model and Cursor agent](#hybrid-local-model-and-cursor-agent).
+
 ---
 
 ## Bloom Behavioral Evaluation
@@ -173,6 +231,9 @@ v6 ships unit tests for path resolution, read-only SQL guards, redaction, invent
 ---
 
 ## FAQ
+
+### Q: How does a local model ask Cursor?
+**A**: Run the one-tool server, put only that server in the chat's toolset, and set `CURSOR_API_KEY` on that server. Steps and caveats are in [Hybrid local model and Cursor agent](#hybrid-local-model-and-cursor-agent). The key stays in Msty's toolbox environment. It does not belong in this repository.
 
 ### Q: Why did detection fail on older MCP versions?
 **A**: v5 looked for `~/Library/Application Support/Msty/msty.db`. Studio 2.x stores data under `MstyStudio` and the Chromium File System SQLite path. v6 fixes this.

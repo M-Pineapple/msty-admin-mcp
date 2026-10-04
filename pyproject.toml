@@ -4,8 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "msty-admin-mcp"
-version = "6.0.0"
-description = "Comprehensive MCP server for administering Msty Studio Desktop 2.9+ with 55 tools, Studio entity inventory, insights analytics, Nexus bridge, and Bloom evaluation"
+version = "6.1.0"
+description = "Comprehensive MCP server for administering Msty Studio Desktop 2.9+ with 56 tools, Studio entity inventory, insights analytics, Nexus bridge, Bloom evaluation, and a Cursor-agent handoff for local models"
 readme = "README.md"
 requires-python = ">=3.10"
 license = {text = "MIT"}
@@ -26,6 +26,7 @@ http = [
 
 [project.scripts]
 msty-admin-mcp = "src.server:main"
+msty-frontier = "src.frontier_main:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src"]
