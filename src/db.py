@@ -45,7 +45,22 @@ def _is_sensitive_key(key: str) -> bool:
     return any(lower.endswith(suffix) for suffix in SENSITIVE_SUFFIXES)
 
 
+def _try_json(value: str) -> Any:
+    text = value.strip()
+    if not text or text[0] not in "{[":
+        return None
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        return None
+
+
 def redact_value(key: str, value: Any) -> Any:
+    if isinstance(value, str):
+        parsed = _try_json(value)
+        if parsed is not None:
+            redacted = redact_value(key, parsed)
+            return json.dumps(redacted) if not isinstance(redacted, str) else redacted
     if _is_sensitive_key(key) and value not in (None, "", [], {}):
         return "[REDACTED]"
     if isinstance(value, dict):
@@ -57,6 +72,67 @@ def redact_value(key: str, value: Any) -> Any:
 
 def redact_row(row: Dict[str, Any]) -> Dict[str, Any]:
     return {k: redact_value(k, v) for k, v in row.items()}
+
+
+_SQL_STRINGS = re.compile(r"'(?:''|[^'])*'|\"(?:[^\"]|\"\")*\"")
+_SQL_IDENT = re.compile(r"\b([A-Za-z_][A-Za-z0-9_]*)\b")
+_SQL_KEYWORDS = {
+    "SELECT",
+    "FROM",
+    "WHERE",
+    "WITH",
+    "AS",
+    "AND",
+    "OR",
+    "ON",
+    "JOIN",
+    "LEFT",
+    "RIGHT",
+    "INNER",
+    "OUTER",
+    "GROUP",
+    "BY",
+    "ORDER",
+    "LIMIT",
+    "PRAGMA",
+    "NULL",
+    "TRUE",
+    "FALSE",
+    "NOT",
+    "IN",
+    "IS",
+    "LIKE",
+    "DISTINCT",
+    "CASE",
+    "WHEN",
+    "THEN",
+    "ELSE",
+    "END",
+    "HAVING",
+    "UNION",
+    "ALL",
+    "EXISTS",
+    "BETWEEN",
+    "ASC",
+    "DESC",
+    "COUNT",
+    "SUM",
+    "AVG",
+    "MIN",
+    "MAX",
+    "CAST",
+    "TABLE",
+}
+
+
+def names_credential_column(query: str) -> bool:
+    stripped = _SQL_STRINGS.sub(" ", query)
+    for ident in _SQL_IDENT.findall(stripped):
+        if ident.upper() in _SQL_KEYWORDS:
+            continue
+        if _is_sensitive_key(ident):
+            return True
+    return False
 
 
 def get_database_path(explicit: Optional[str] = None) -> Optional[Path]:
@@ -170,6 +246,8 @@ def safe_query(
         raise ValueError("Only read-only SELECT / WITH / PRAGMA queries are allowed")
     if ";" in query.strip().rstrip(";"):
         raise ValueError("Multiple statements are not allowed")
+    if names_credential_column(query):
+        raise ValueError("Queries must not select credential columns")
 
     with connect(database_path=database_path) as conn:
         cursor = conn.execute(query)
