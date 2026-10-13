@@ -1,5 +1,5 @@
 """
-Msty Admin MCP Server — v6.1.0
+Msty Admin MCP Server — v6.1.1
 ===============================
 
 Administer Msty Studio Desktop 2.9+ with real path/DB detection, entity inventory,
@@ -41,7 +41,7 @@ from src.services import (
     service_status_map,
 )
 
-SERVER_VERSION = "6.1.0"
+SERVER_VERSION = "6.1.1"
 TOOL_COUNT = 56
 
 mcp = FastMCP("msty-admin-mcp", f"v{SERVER_VERSION}")
