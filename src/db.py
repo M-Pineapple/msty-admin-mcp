@@ -34,6 +34,50 @@ SENSITIVE_EXACT = {
 }
 SENSITIVE_SUFFIXES = ("_key", "_secret", "_token", "_password", "_credential", "_credentials")
 
+# JSON extractors leak individual keys even when the column name (config, extras) is safe.
+_JSON_EXTRACT_FUNCTIONS = {
+    "json_extract",
+    "->",
+    "->>",
+    "json_remove",
+    "json_replace",
+    "json_set",
+    "json_insert",
+    "json_patch",
+}
+_JSON_VALUE_TABLES = {"json_each", "json_tree"}
+_DENIED_SQL_ACTIONS = {
+    sqlite3.SQLITE_INSERT,
+    sqlite3.SQLITE_UPDATE,
+    sqlite3.SQLITE_DELETE,
+    sqlite3.SQLITE_DROP_TABLE,
+    sqlite3.SQLITE_CREATE_TABLE,
+    sqlite3.SQLITE_ATTACH,
+    sqlite3.SQLITE_DETACH,
+    sqlite3.SQLITE_ALTER_TABLE,
+    sqlite3.SQLITE_REINDEX,
+    sqlite3.SQLITE_CREATE_VIEW,
+    sqlite3.SQLITE_DROP_VIEW,
+    sqlite3.SQLITE_CREATE_VTABLE,
+    sqlite3.SQLITE_DROP_VTABLE,
+}
+
+# Distinctive provider-key shapes. Column-name redaction still covers generic secrets.
+_SECRET_VALUE_RE = re.compile(
+    r"("
+    r"sk-[A-Za-z0-9_-]{8,}"
+    r"|ghp_[A-Za-z0-9]{20,}"
+    r"|github_pat_[A-Za-z0-9_]{20,}"
+    r"|xox[baprs]-[A-Za-z0-9-]{10,}"
+    r"|AKIA[0-9A-Z]{16}"
+    r"|AIza[0-9A-Za-z_-]{32,}"
+    r"|Bearer\s+\S+"
+    r"|-----BEGIN(?: [A-Z]+)? PRIVATE KEY-----[\s\S]*?-----END(?: [A-Z]+)? PRIVATE KEY-----"
+    r")",
+    re.IGNORECASE,
+)
+_HEX_BLOB_RE = re.compile(r"\A(?:[0-9a-fA-F]{2}){8,}\Z")
+
 
 def _is_sensitive_key(key: str) -> bool:
     lower = key.lower()
@@ -55,12 +99,33 @@ def _try_json(value: str) -> Any:
         return None
 
 
+def _redact_secret_patterns(value: str, *, decode_hex: bool = True) -> str:
+    redacted = _SECRET_VALUE_RE.sub("[REDACTED]", value)
+    if decode_hex and _HEX_BLOB_RE.fullmatch(value):
+        try:
+            decoded = bytes.fromhex(value).decode("utf-8")
+        except (ValueError, UnicodeDecodeError):
+            decoded = None
+        if decoded:
+            parsed = _try_json(decoded)
+            if parsed is not None:
+                walked = redact_value("", parsed)
+                if walked != parsed:
+                    return "[REDACTED]"
+            if decoded != _redact_secret_patterns(decoded, decode_hex=False):
+                return "[REDACTED]"
+    return redacted
+
+
 def redact_value(key: str, value: Any) -> Any:
     if isinstance(value, str):
         parsed = _try_json(value)
         if parsed is not None:
             redacted = redact_value(key, parsed)
             return json.dumps(redacted) if not isinstance(redacted, str) else redacted
+        if _is_sensitive_key(key) and value not in (None, "", [], {}):
+            return "[REDACTED]"
+        return _redact_secret_patterns(value)
     if _is_sensitive_key(key) and value not in (None, "", [], {}):
         return "[REDACTED]"
     if isinstance(value, dict):
@@ -68,6 +133,33 @@ def redact_value(key: str, value: Any) -> Any:
     if isinstance(value, list):
         return [redact_value(key, item) for item in value]
     return value
+
+
+def _credential_authorizer(
+    action: int,
+    arg1: Optional[str],
+    arg2: Optional[str],
+    _dbname: Optional[str],
+    _source: Optional[str],
+) -> int:
+    """Refuse credential-column reads at the SQLite layer, including aliases and JSON extractors."""
+    if action in _DENIED_SQL_ACTIONS:
+        return sqlite3.SQLITE_DENY
+    if action == sqlite3.SQLITE_FUNCTION:
+        fn = (arg2 or "").lower()
+        if fn in _JSON_EXTRACT_FUNCTIONS or fn == "load_extension":
+            # IGNORE yields NULL instead of aborting a wider SELECT list.
+            return sqlite3.SQLITE_IGNORE
+        return sqlite3.SQLITE_OK
+    if action == sqlite3.SQLITE_READ:
+        table = (arg1 or "").lower()
+        column = arg2 or ""
+        if table in _JSON_VALUE_TABLES:
+            return sqlite3.SQLITE_IGNORE
+        if column and _is_sensitive_key(column):
+            return sqlite3.SQLITE_IGNORE
+        return sqlite3.SQLITE_OK
+    return sqlite3.SQLITE_OK
 
 
 def redact_row(row: Dict[str, Any]) -> Dict[str, Any]:
@@ -156,6 +248,7 @@ def connect(readonly: bool = True, database_path: Optional[str] = None) -> sqlit
     else:
         conn = sqlite3.connect(str(path))
     conn.row_factory = sqlite3.Row
+    conn.set_authorizer(_credential_authorizer)
     return conn
 
 

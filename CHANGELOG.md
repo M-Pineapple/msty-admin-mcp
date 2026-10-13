@@ -5,6 +5,7 @@
 ### Security
 
 - `read_msty_database` now redacts keys inside JSON text and refuses SQL that names credential columns, including aliases such as `SELECT apiKey AS x`.
+- Credential reads are also blocked at SQLite (`set_authorizer` ignores sensitive columns and JSON extractors such as `json_extract` / `->>` / `json_each`). Result values that match provider-key patterns are redacted even when the result column is renamed.
 
 ## v6.1.0 — 2026-10-04
 

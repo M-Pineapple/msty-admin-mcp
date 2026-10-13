@@ -135,6 +135,13 @@ def temp_studio_db(tmp_path: Path) -> Path:
             name TEXT,
             createdAt TEXT DEFAULT CURRENT_TIMESTAMP
         );
+        CREATE TABLE languageModelsProviders (
+            id TEXT PRIMARY KEY,
+            name TEXT,
+            apiKey TEXT,
+            config TEXT,
+            extras TEXT
+        );
         INSERT INTO personas (id, name, folderId, systemPrompt)
         VALUES ('p1', 'Tester', 'f1', 'You are a thorough test assistant that validates MCP tools.');
         INSERT INTO tools (id, toolId, name, config, provider)
@@ -149,6 +156,14 @@ def temp_studio_db(tmp_path: Path) -> Path:
             'i1', 'local', 'mstyLocal', 'llama3.2:3b', 10, 20, 30, 0, 0, 0, 0.1, 1.5, 12.0
         );
         INSERT INTO workspaces (id, name) VALUES ('w1', 'Default');
+        INSERT INTO languageModelsProviders (id, name, apiKey, config, extras)
+        VALUES (
+            'prov1',
+            'OpenAI',
+            'sk-live-TESTSECRET99',
+            '{"apiKey":"sk-json-TESTSECRET99","name":"ok"}',
+            '{}'
+        );
         """
     )
     conn.commit()
@@ -243,9 +258,11 @@ class TestDatabaseLayer:
         assert payload["apiKey"] == "[REDACTED]"
         assert payload["name"] == "ok"
 
-    def test_redacts_aliased_column_when_name_is_safe(self):
-        row = db.redact_row({"x": "sk-live"})
-        assert row["x"] == "sk-live"
+    def test_redacts_secret_shaped_values_when_column_name_is_safe(self):
+        row = db.redact_row({"x": "sk-live-TESTSECRET99"})
+        assert row["x"] == "[REDACTED]"
+        row2 = db.redact_row({"x": "ordinary-name"})
+        assert row2["x"] == "ordinary-name"
 
     def test_refuses_queries_that_name_credential_columns(self):
         assert db.names_credential_column("SELECT apiKey AS x FROM providers")
@@ -255,6 +272,92 @@ class TestDatabaseLayer:
     def test_safe_query_rejects_credential_columns(self, temp_studio_db: Path):
         with pytest.raises(ValueError, match="credential"):
             db.safe_query("SELECT api_key AS x FROM tools", database_path=str(temp_studio_db))
+
+    def _query_hiding_secrets(self, sql: str, temp_studio_db: Path):
+        try:
+            results, count = db.safe_query(sql, database_path=str(temp_studio_db))
+            payload: dict = {"results": results, "count": count}
+        except Exception as exc:
+            payload = {"error": str(exc)}
+        blob = json.dumps(payload, default=str)
+        assert "TESTSECRET99" not in blob
+        assert "sk-live-" not in blob
+        assert "sk-json-" not in blob
+        return payload
+
+    def test_quoted_identifier_does_not_leak_apikey(self, temp_studio_db: Path):
+        payload = self._query_hiding_secrets(
+            'SELECT "apiKey" AS x FROM languageModelsProviders',
+            temp_studio_db,
+        )
+        if "results" in payload:
+            assert payload["results"]
+            assert payload["results"][0].get("x") in (None, "[REDACTED]")
+
+    def test_cte_column_rename_does_not_leak_apikey(self, temp_studio_db: Path):
+        payload = self._query_hiding_secrets(
+            "WITH t(a, b, c, d, e) AS (SELECT * FROM languageModelsProviders) SELECT c FROM t",
+            temp_studio_db,
+        )
+        if "results" in payload:
+            assert payload["results"]
+            assert payload["results"][0].get("c") in (None, "[REDACTED]")
+
+    def test_json_extract_does_not_leak_apikey(self, temp_studio_db: Path):
+        payload = self._query_hiding_secrets(
+            "SELECT json_extract(config, '$.apiKey') AS x FROM languageModelsProviders",
+            temp_studio_db,
+        )
+        if "results" in payload:
+            assert payload["results"]
+            assert payload["results"][0].get("x") in (None, "[REDACTED]")
+
+    def test_json_extract_variants_do_not_leak_apikey(self, temp_studio_db: Path):
+        queries = [
+            "SELECT config->>'apiKey' AS x FROM languageModelsProviders",
+            "SELECT config->'$.apiKey' AS x FROM languageModelsProviders",
+            "SELECT `apiKey` AS x FROM languageModelsProviders",
+            "SELECT [apiKey] AS x FROM languageModelsProviders",
+            "SELECT j.value FROM languageModelsProviders, json_each(config) AS j",
+            "SELECT substr(config, 12, 24) AS x FROM languageModelsProviders",
+            "SELECT hex(apiKey) AS x FROM languageModelsProviders",
+        ]
+        for sql in queries:
+            self._query_hiding_secrets(sql, temp_studio_db)
+
+    def test_legitimate_provider_queries_still_work(self, temp_studio_db: Path):
+        names, count = db.safe_query(
+            "SELECT name FROM languageModelsProviders",
+            database_path=str(temp_studio_db),
+        )
+        assert count == 1
+        assert names[0]["name"] == "OpenAI"
+
+        configs, _ = db.safe_query(
+            "SELECT config FROM languageModelsProviders",
+            database_path=str(temp_studio_db),
+        )
+        payload = json.loads(configs[0]["config"])
+        assert payload["apiKey"] == "[REDACTED]"
+        assert payload["name"] == "ok"
+
+        personas, _ = db.safe_query(
+            "SELECT name, systemPrompt FROM personas",
+            database_path=str(temp_studio_db),
+        )
+        assert personas[0]["name"] == "Tester"
+        assert "thorough test assistant" in personas[0]["systemPrompt"]
+
+    def test_read_msty_database_tool_does_not_leak_quoted_apikey(
+        self, temp_studio_db: Path, monkeypatch
+    ):
+        monkeypatch.setattr(db, "get_database_path", lambda explicit=None: temp_studio_db)
+        data = json.loads(
+            read_msty_database('SELECT "apiKey" AS x FROM languageModelsProviders')
+        )
+        blob = json.dumps(data)
+        assert "TESTSECRET99" not in blob
+        assert data.get("error") or data.get("results")
 
 
 class TestInventoryAnalytics:
