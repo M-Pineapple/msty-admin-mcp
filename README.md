@@ -2,7 +2,7 @@
 
 <img src="assets/logo.svg" alt="Msty Admin MCP logo" width="240"/>
 
-# Msty Admin MCP — v6.1.0
+# Msty Admin MCP — v6.1.1
 
 [![Licence: MIT](https://img.shields.io/github/license/M-Pineapple/msty-admin-mcp)](LICENSE)
 [![Python](https://img.shields.io/badge/Python-3.10+-3776AB?logo=python&logoColor=white)](https://www.python.org)
@@ -16,7 +16,7 @@ Comprehensive MCP server for administering **Msty Studio Desktop 2.9+** with **5
 
 **Requirements**: Python 3.10+, MCP SDK v1.0.0+, psutil 5.9.0+
 
-**Latest**: v6.1.0 (2026-10-04) — local models can hand a hard question to the Cursor agent on this Mac and see the answer in the same Msty chat.
+**Latest**: v6.1.1 (2026-10-13) — stored API keys are now better protected in `read_msty_database`. Please update.
 
 > **New to Bloom?** Jump to the [Bloom Behavioral Evaluation](#bloom-behavioral-evaluation) section or read the [full Bloom guide](docs/BLOOM_GUIDE.md).
 
