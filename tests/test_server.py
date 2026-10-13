@@ -237,6 +237,25 @@ class TestDatabaseLayer:
         assert row["api_key"] == "[REDACTED]"
         assert row["token"] == "[REDACTED]"
 
+    def test_redacts_keys_inside_json_text(self):
+        row = db.redact_row({"extras": '{"apiKey":"sk-live","name":"ok"}'})
+        payload = json.loads(row["extras"])
+        assert payload["apiKey"] == "[REDACTED]"
+        assert payload["name"] == "ok"
+
+    def test_redacts_aliased_column_when_name_is_safe(self):
+        row = db.redact_row({"x": "sk-live"})
+        assert row["x"] == "sk-live"
+
+    def test_refuses_queries_that_name_credential_columns(self):
+        assert db.names_credential_column("SELECT apiKey AS x FROM providers")
+        assert db.names_credential_column("SELECT api_key FROM providers")
+        assert not db.names_credential_column("SELECT name, extras FROM personas")
+
+    def test_safe_query_rejects_credential_columns(self, temp_studio_db: Path):
+        with pytest.raises(ValueError, match="credential"):
+            db.safe_query("SELECT api_key AS x FROM tools", database_path=str(temp_studio_db))
+
 
 class TestInventoryAnalytics:
     def test_list_entities(self, temp_studio_db: Path, monkeypatch):

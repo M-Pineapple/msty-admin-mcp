@@ -1,5 +1,11 @@
 # Msty Admin MCP — Changelog
 
+## Unreleased
+
+### Security
+
+- `read_msty_database` now redacts keys inside JSON text and refuses SQL that names credential columns, including aliases such as `SELECT apiKey AS x`.
+
 ## v6.1.0 — 2026-10-04
 
 ### Added
