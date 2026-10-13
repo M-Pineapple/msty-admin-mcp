@@ -4,6 +4,10 @@
 
 # Msty Admin MCP — v6.1.0
 
+[![Licence: MIT](https://img.shields.io/github/license/M-Pineapple/msty-admin-mcp)](LICENSE)
+[![Python](https://img.shields.io/badge/Python-3.10+-3776AB?logo=python&logoColor=white)](https://www.python.org)
+[![Stars](https://img.shields.io/github/stars/M-Pineapple/msty-admin-mcp)](https://github.com/M-Pineapple/msty-admin-mcp/stargazers)
+
 </div>
 
 Comprehensive MCP server for administering **Msty Studio Desktop 2.9+** with **56 tools** across 9 phases: real Studio path/DB detection, entity inventory (Context Studio, Knowledge Stacks, Agent Mode, Turnstiles, …), insights analytics, Nexus bridge, Bloom evaluation, multi-backend local inference, and a handoff from a local model to the Cursor agent on this Mac.
@@ -37,6 +41,43 @@ cd msty-admin-mcp
 pip install -e .
 pytest tests/ -v
 ```
+
+---
+
+## Usage
+
+Once the server is registered with Msty Studio (or another MCP host), ask in natural language. The host maps your words onto the tools.
+
+### Health and install
+
+- "Detect my Msty installation and show the version."
+- "Analyse Msty health."
+- "What is the MCP server status?"
+
+### Studio inventory
+
+- "List my personas and knowledge stacks."
+- "Show all workspaces."
+- "List the tools in my Toolbox."
+- "Export a workflow pack for my current workspace."
+
+### Local models and services
+
+- "Which local models are available?"
+- "Recommend a model for summarising long documents."
+- "What is the Nexus status and which models does it expose?"
+
+### Analytics and Bloom
+
+- "Show model performance metrics from Studio insights."
+- "Analyse my conversation patterns."
+- "Run a Bloom evaluation for sycophancy on this model."
+
+### Frontier handoff
+
+For a local-model chat, use the one-tool Frontier server (see [Hybrid local model and Cursor agent](#hybrid-local-model-and-cursor-agent)):
+
+- "Ask the Cursor agent on this Mac why this SwiftUI view is not updating."
 
 ---
 
@@ -256,6 +297,18 @@ MIT License — See LICENSE file
 ## Contributing
 
 Contributions welcome! Please open issues or PRs on GitHub.
+
+## More MCP servers by M-Pineapple
+
+Other MCP servers in this portfolio:
+
+- [Claude Project Coordinator](https://github.com/M-Pineapple/Claude-Project-Coordinator). Track Xcode projects, status, tech stack and health.
+- [CryptoAnalysisMCP](https://github.com/M-Pineapple/CryptoAnalysisMCP). Cryptocurrency technical analysis for Claude Desktop.
+- [Warp Command Runner](https://github.com/M-Pineapple/warp-command-runner). Give any chat AI a real terminal.
+- [Member Berries](https://github.com/M-Pineapple/member-berries-apple-mcp). Apple Calendar, Notes and Reminders with personality.
+- [SeaShell](https://github.com/M-Pineapple/seashell). Talk to Claude from any terminal block.
+- [TextEdit MCP](https://github.com/M-Pineapple/TextEdit-MCP). Formatted RTF documents via macOS TextEdit.
+- [HubSpot Auditor](https://github.com/M-Pineapple/hubspot-auditor). Read-only HubSpot portal audit.
 
 ## 💖 Support This Project
 
