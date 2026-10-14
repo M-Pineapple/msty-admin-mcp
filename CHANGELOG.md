@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+## v6.1.2 — 2026-10-14
+
+### Fixed
+
+- Fresh installs work again. The MCP Python SDK 2.x renamed `FastMCP`, so a new install picked up 2.x and the server could not start. The dependency is now `mcp>=1.0.0,<2`.
+- README install steps corrected (Python 3.10+, GitHub install fallback, from-source steps).
+
+### Added
+
+- Packaging tests: the server modules and both console entry points must import, and the installed MCP SDK must be 1.x.
+
 ## v6.1.1 — 2026-10-13
 
 ### Security

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "msty-admin-mcp"
-version = "6.1.1"
+version = "6.1.2"
 description = "Comprehensive MCP server for administering Msty Studio Desktop 2.9+ with 56 tools, Studio entity inventory, insights analytics, Nexus bridge, Bloom evaluation, and a Cursor-agent handoff for local models"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -14,7 +14,7 @@ authors = [
 ]
 
 dependencies = [
-    "mcp>=1.0.0",
+    "mcp>=1.0.0,<2",
     "psutil>=5.9.0",
 ]
 
@@ -22,6 +22,11 @@ dependencies = [
 http = [
     "uvicorn>=0.20.0",
     "starlette>=0.30.0",
+]
+test = [
+    "pytest>=7.0.0",
+    "pytest-asyncio>=0.21.0",
+    "tomli>=2.0.0; python_version < '3.11'",
 ]
 
 [project.scripts]

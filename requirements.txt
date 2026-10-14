@@ -2,7 +2,7 @@
 # Phase 1: Foundational Tools
 
 # Core MCP framework
-mcp>=1.0.0
+mcp>=1.0.0,<2
 
 # System monitoring
 psutil>=5.9.0
