@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## v6.1.3 — 2026-10-14
+
+### Added
+
+- Tests that check the SQLite-level credential guard directly, so a regression there is caught even if the SQL-text check still passes.
+
 ## v6.1.2 — 2026-10-14
 
 ### Fixed

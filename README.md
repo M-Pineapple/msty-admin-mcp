@@ -2,7 +2,7 @@
 
 <img src="assets/logo.svg" alt="Msty Admin MCP logo" width="240"/>
 
-# Msty Admin MCP — v6.1.2
+# Msty Admin MCP — v6.1.3
 
 [![Licence: MIT](https://img.shields.io/github/license/M-Pineapple/msty-admin-mcp)](LICENSE)
 [![Python](https://img.shields.io/badge/Python-3.10+-3776AB?logo=python&logoColor=white)](https://www.python.org)
@@ -33,7 +33,7 @@ msty-admin-mcp  # Runs on stdio (default MCP transport)
 
 If `pip install msty-admin-mcp` cannot find the package, install the release straight from GitHub:
 ```bash
-pip install "msty-admin-mcp @ git+https://github.com/M-Pineapple/msty-admin-mcp@v6.1.2"
+pip install "msty-admin-mcp @ git+https://github.com/M-Pineapple/msty-admin-mcp@v6.1.3"
 ```
 
 ### With HTTP Transport
