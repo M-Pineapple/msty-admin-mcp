@@ -138,9 +138,12 @@ def temp_studio_db(tmp_path: Path) -> Path:
         CREATE TABLE languageModelsProviders (
             id TEXT PRIMARY KEY,
             name TEXT,
+            providerId TEXT,
+            models TEXT,
             apiKey TEXT,
             config TEXT,
-            extras TEXT
+            extras TEXT,
+            createdAt TEXT DEFAULT CURRENT_TIMESTAMP
         );
         INSERT INTO personas (id, name, folderId, systemPrompt)
         VALUES ('p1', 'Tester', 'f1', 'You are a thorough test assistant that validates MCP tools.');
@@ -170,6 +173,43 @@ def temp_studio_db(tmp_path: Path) -> Path:
     conn.close()
     # SQLite magic already present
     return db_path
+
+
+DUMMY_PROVIDER_KEY = "DUMMY-FAKE-KEY-NOT-REAL-0000"
+DUMMY_CONFIG_KEY = "DUMMY-FAKE-CONFIG-KEY-NOT-REAL-0000"
+DUMMY_EXTRAS_KEY = "DUMMY-FAKE-EXTRAS-KEY-NOT-REAL-0000"
+
+
+@pytest.fixture()
+def fake_studio_db(temp_studio_db: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Point the db layer at a fake Studio DB so tool tests run without Msty installed.
+
+    Adds an extra provider row with obviously dummy credentials. Only the
+    database location is patched; redaction and authorizer code are untouched.
+    """
+    conn = sqlite3.connect(str(temp_studio_db))
+    conn.execute(
+        "INSERT INTO languageModelsProviders (id, name, apiKey, config, extras) VALUES (?, ?, ?, ?, ?)",
+        (
+            "prov-dummy",
+            "Dummy Provider",
+            DUMMY_PROVIDER_KEY,
+            json.dumps({"apiKey": DUMMY_CONFIG_KEY, "name": "dummy"}),
+            json.dumps({"apiKey": DUMMY_EXTRAS_KEY, "label": "dummy"}),
+        ),
+    )
+    conn.commit()
+    conn.close()
+
+    real_get_database_path = db.get_database_path
+
+    def _fake_get_database_path(explicit=None):
+        if explicit:
+            return real_get_database_path(explicit)
+        return temp_studio_db
+
+    monkeypatch.setattr(db, "get_database_path", _fake_get_database_path)
+    return temp_studio_db
 
 
 class TestPathResolution:
@@ -379,6 +419,7 @@ class TestInventoryAnalytics:
         assert result["models"][0]["model_id"] == "llama3.2:3b"
 
 
+@pytest.mark.usefixtures("fake_studio_db")
 class TestMCPTools:
     def test_server_version(self):
         assert SERVER_VERSION == "6.1.2"
@@ -452,6 +493,7 @@ class TestMCPTools:
         assert "quality_score" in data
 
 
+@pytest.mark.usefixtures("fake_studio_db")
 class TestSecurityFeatures:
     def test_api_keys_redacted(self):
         result = get_model_providers()
@@ -461,6 +503,16 @@ class TestSecurityFeatures:
                 if any(x in key.lower() for x in ["key", "secret", "token", "credential"]):
                     if value not in (None, "", [], {}):
                         assert value == "[REDACTED]", f"Key {key} not redacted"
+        providers = data.get("database_providers", [])
+        assert {p.get("id") for p in providers} >= {"prov1", "prov-dummy"}, providers
+        for secret in (DUMMY_PROVIDER_KEY, DUMMY_CONFIG_KEY, DUMMY_EXTRAS_KEY, "TESTSECRET99"):
+            assert secret not in result, f"dummy credential {secret} leaked"
+        dummy = next(p for p in providers if p.get("id") == "prov-dummy")
+        assert dummy.get("apiKey") in (None, "[REDACTED]"), dummy
+        # extras is a returned column carrying a dummy key: it must come back redacted
+        extras = dummy.get("extras")
+        extras = json.loads(extras) if isinstance(extras, str) else extras
+        assert extras and extras.get("apiKey") == "[REDACTED]", extras
 
 
 if __name__ == "__main__":
