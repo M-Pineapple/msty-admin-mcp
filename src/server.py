@@ -1,5 +1,5 @@
 """
-Msty Admin MCP Server — v6.1.1
+Msty Admin MCP Server — v6.1.2
 ===============================
 
 Administer Msty Studio Desktop 2.9+ with real path/DB detection, entity inventory,
@@ -23,7 +23,7 @@ from typing import Any, Dict, List, Optional
 try:
     from mcp.server.fastmcp import FastMCP
 except ImportError:
-    print("Error: MCP SDK not installed. Install with: pip install mcp>=1.0.0")
+    print("Error: MCP SDK not installed. Install with: pip install 'mcp>=1.0.0,<2'")
     sys.exit(1)
 
 from src import analytics, db, inventory, nexus
@@ -41,7 +41,7 @@ from src.services import (
     service_status_map,
 )
 
-SERVER_VERSION = "6.1.1"
+SERVER_VERSION = "6.1.2"
 TOOL_COUNT = 56
 
 mcp = FastMCP("msty-admin-mcp", f"v{SERVER_VERSION}")

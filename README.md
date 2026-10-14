@@ -2,7 +2,7 @@
 
 <img src="assets/logo.svg" alt="Msty Admin MCP logo" width="240"/>
 
-# Msty Admin MCP — v6.1.1
+# Msty Admin MCP — v6.1.2
 
 [![Licence: MIT](https://img.shields.io/github/license/M-Pineapple/msty-admin-mcp)](LICENSE)
 [![Python](https://img.shields.io/badge/Python-3.10+-3776AB?logo=python&logoColor=white)](https://www.python.org)
@@ -25,14 +25,20 @@ Comprehensive MCP server for administering **Msty Studio Desktop 2.9+** with **5
 ## Installation
 
 ### Quick Start
+Needs Python 3.10 or newer.
 ```bash
 pip install msty-admin-mcp
 msty-admin-mcp  # Runs on stdio (default MCP transport)
 ```
 
+If `pip install msty-admin-mcp` cannot find the package, install the release straight from GitHub:
+```bash
+pip install "msty-admin-mcp @ git+https://github.com/M-Pineapple/msty-admin-mcp@v6.1.2"
+```
+
 ### With HTTP Transport
 ```bash
-pip install msty-admin-mcp[http]
+pip install "msty-admin-mcp[http]"
 msty-admin-mcp --transport streamable-http  # Runs on http://localhost:8000
 ```
 
@@ -40,9 +46,12 @@ msty-admin-mcp --transport streamable-http  # Runs on http://localhost:8000
 ```bash
 git clone https://github.com/M-Pineapple/msty-admin-mcp
 cd msty-admin-mcp
-pip install -e .
+python3 -m venv .venv && source .venv/bin/activate
+pip install -e ".[test]"
 pytest tests/ -v
 ```
+
+This server targets the 1.x MCP Python SDK (`mcp>=1.0.0,<2`).
 
 ---
 
