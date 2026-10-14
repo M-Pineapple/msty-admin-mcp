@@ -10,7 +10,7 @@ from mcp.server.fastmcp import FastMCP
 
 from src.frontier import ask_cursor_agent
 
-mcp = FastMCP("msty-frontier", "v6.1.2")
+mcp = FastMCP("msty-frontier", "v6.1.3")
 
 
 @mcp.tool()
