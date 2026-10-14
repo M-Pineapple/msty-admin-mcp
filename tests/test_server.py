@@ -517,3 +517,42 @@ class TestSecurityFeatures:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+class TestCredentialAuthorizerGuard:
+    """Guards the SQLite-layer authorizer itself (not only the SQL-text filter).
+
+    Queries go straight through db.connect(), bypassing safe_query, so the only
+    thing standing between the caller and the dummy keys is _credential_authorizer.
+    If it ever returned SQLITE_OK for everything, these tests fail.
+    """
+
+    QUERIES = [
+        "SELECT apiKey FROM languageModelsProviders",
+        "SELECT apiKey AS x FROM languageModelsProviders",
+        "SELECT json_extract(config, '$.apiKey') FROM languageModelsProviders",
+        "SELECT json_extract(config, '$.apiKey') AS x FROM languageModelsProviders",
+    ]
+
+    @pytest.mark.parametrize("query", QUERIES)
+    def test_raw_credential_reads_are_denied_or_null(self, temp_studio_db: Path, query: str):
+        try:
+            with db.connect(database_path=str(temp_studio_db)) as conn:
+                rows = [tuple(r) for r in conn.execute(query).fetchall()]
+        except sqlite3.DatabaseError:
+            return  # denied outright: acceptable
+        assert rows, "fixture should contain provider rows"
+        for row in rows:
+            assert all(v is None for v in row), f"credential readable via {query!r}: {row}"
+        assert "TESTSECRET99" not in repr(rows)
+
+    def test_authorizer_is_installed_on_connections(self, temp_studio_db: Path):
+        with sqlite3.connect(str(temp_studio_db)) as raw:
+            leaked = raw.execute("SELECT apiKey FROM languageModelsProviders").fetchone()[0]
+        assert leaked and "TESTSECRET99" in leaked, "control: the fixture must hold a dummy key"
+        with db.connect(database_path=str(temp_studio_db)) as conn:
+            try:
+                value = conn.execute("SELECT apiKey FROM languageModelsProviders").fetchone()[0]
+            except sqlite3.DatabaseError:
+                value = None
+        assert value is None
