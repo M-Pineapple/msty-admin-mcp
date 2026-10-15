@@ -7,6 +7,7 @@
 [![Licence: MIT](https://img.shields.io/github/license/M-Pineapple/msty-admin-mcp)](LICENSE)
 [![Python](https://img.shields.io/badge/Python-3.10+-3776AB?logo=python&logoColor=white)](https://www.python.org)
 [![Stars](https://img.shields.io/github/stars/M-Pineapple/msty-admin-mcp)](https://github.com/M-Pineapple/msty-admin-mcp/stargazers)
+[![M-Pineapple/msty-admin-mcp MCP server](https://glama.ai/mcp/servers/M-Pineapple/msty-admin-mcp/badges/score.svg)](https://glama.ai/mcp/servers/M-Pineapple/msty-admin-mcp)
 
 </div>
 
