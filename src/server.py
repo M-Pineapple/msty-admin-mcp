@@ -997,22 +997,11 @@ def main() -> None:
     if args.transport == "stdio":
         mcp.run()
     else:
-        try:
-            import uvicorn
-            from starlette.applications import Starlette
-            from starlette.responses import JSONResponse
-
-            app = Starlette()
-
-            @app.route("/health", methods=["GET"])
-            async def health(request):  # type: ignore
-                return JSONResponse({"status": "healthy", "version": SERVER_VERSION})
-
-            uvicorn.run(app, host=args.host, port=args.port)
-        except ImportError:
-            print("Error: HTTP transport requires uvicorn and starlette")
-            print("Install with: pip install msty-admin-mcp[http]")
-            sys.exit(1)
+        # Serve the real MCP endpoint (/mcp). The old hand-built Starlette app
+        # only exposed /health and crashed on Starlette 1.x (no app.route).
+        mcp.settings.host = args.host
+        mcp.settings.port = args.port
+        mcp.run(transport="streamable-http")
 
 
 if __name__ == "__main__":

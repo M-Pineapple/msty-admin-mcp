@@ -7,6 +7,7 @@ from __future__ import annotations
 import json
 import re
 import sqlite3
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
@@ -76,12 +77,26 @@ _SECRET_VALUE_RE = re.compile(
     r")",
     re.IGNORECASE,
 )
+_URL_USERINFO_RE = re.compile(r"([a-z][a-z0-9+.-]*://)[^/\s@]+@", re.IGNORECASE)
+# Raw page / storage introspection tables bypass every column check.
+_RAW_STORAGE_TABLES = {"sqlite_dbpage", "dbstat"}
+_FREE_SQL_TIMEOUT_S = 5.0
 _HEX_BLOB_RE = re.compile(r"\A(?:[0-9a-fA-F]{2}){8,}\Z")
+
+
+# camelCase / kebab-case names (accessToken, clientSecret, x-api-key) fold to these.
+_SENSITIVE_FOLDED_SUFFIXES = (
+    "apikey", "secret", "token", "password", "passwd", "credential", "credentials",
+    "authorization", "privatekey", "secretkey", "accesskey", "accesskeyid",
+)
 
 
 def _is_sensitive_key(key: str) -> bool:
     lower = key.lower()
     if lower in SENSITIVE_EXACT:
+        return True
+    folded = re.sub(r"[^a-z0-9]", "", lower)
+    if folded.endswith(_SENSITIVE_FOLDED_SUFFIXES) and not folded.endswith("tokens"):
         return True
     # Avoid false positives on promptTokens / completionTokens / totalTokens
     if "tokens" in lower and lower.endswith("tokens"):
@@ -101,6 +116,7 @@ def _try_json(value: str) -> Any:
 
 def _redact_secret_patterns(value: str, *, decode_hex: bool = True) -> str:
     redacted = _SECRET_VALUE_RE.sub("[REDACTED]", value)
+    redacted = _URL_USERINFO_RE.sub(r"\1[REDACTED]@", redacted)
     if decode_hex and _HEX_BLOB_RE.fullmatch(value):
         try:
             decoded = bytes.fromhex(value).decode("utf-8")
@@ -135,6 +151,18 @@ def redact_value(key: str, value: Any) -> Any:
     return value
 
 
+# Free-form SQL (safe_query) must never see these raw: they hold JSON that can
+# embed provider keys or MCP env tokens, and SQL string functions (substr, ||,
+# unicode) can slice that text past any output redaction. fetch_all and
+# fetch_by_id still return them, parsed and redacted by redact_row.
+_RAW_JSON_COLUMNS = {
+    "config", "extras", "settings", "env", "headers", "environment",
+    # Generic JSON blob names a future Studio schema could use for keys.
+    "data", "metadata", "meta", "options", "params", "payload", "auth",
+    "credentials", "secrets", "providerconfig", "connection", "connectionconfig",
+}
+
+
 def _credential_authorizer(
     action: int,
     arg1: Optional[str],
@@ -153,12 +181,24 @@ def _credential_authorizer(
         return sqlite3.SQLITE_OK
     if action == sqlite3.SQLITE_READ:
         table = (arg1 or "").lower()
+        if table in _RAW_STORAGE_TABLES:
+            return sqlite3.SQLITE_DENY
         column = arg2 or ""
         if table in _JSON_VALUE_TABLES:
             return sqlite3.SQLITE_IGNORE
         if column and _is_sensitive_key(column):
             return sqlite3.SQLITE_IGNORE
         return sqlite3.SQLITE_OK
+    return sqlite3.SQLITE_OK
+
+
+def _free_sql_authorizer(action, arg1, arg2, dbname, source) -> int:
+    """Stricter authorizer for caller-written SQL: also null raw JSON config columns."""
+    verdict = _credential_authorizer(action, arg1, arg2, dbname, source)
+    if verdict != sqlite3.SQLITE_OK:
+        return verdict
+    if action == sqlite3.SQLITE_READ and (arg2 or "").lower() in _RAW_JSON_COLUMNS:
+        return sqlite3.SQLITE_IGNORE
     return sqlite3.SQLITE_OK
 
 
@@ -343,8 +383,12 @@ def safe_query(
         raise ValueError("Queries must not select credential columns")
 
     with connect(database_path=database_path) as conn:
+        conn.set_authorizer(_free_sql_authorizer)
+        deadline = time.monotonic() + _FREE_SQL_TIMEOUT_S
+        # Non-zero return aborts the statement (runaway recursive CTEs etc.).
+        conn.set_progress_handler(lambda: int(time.monotonic() > deadline), 10_000)
         cursor = conn.execute(query)
-        rows = cursor.fetchall()
+        rows = cursor.fetchmany(limit)
         results = [redact_row(dict(r)) for r in rows[:limit]]
         return results, len(results)
 

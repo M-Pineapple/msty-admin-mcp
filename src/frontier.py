@@ -113,9 +113,10 @@ def build_argv(
     workspace: str,
     api_key: Optional[str] = None,
 ) -> List[str]:
+    # api_key is accepted for compatibility but never placed on argv:
+    # argv is visible to every local user via `ps`. agent_env() passes it.
+    del api_key
     argv = [binary]
-    if api_key:
-        argv.extend(["--api-key", api_key])
     if chat_id:
         argv.extend(["--resume", chat_id])
     argv.extend(
@@ -233,6 +234,10 @@ def agent_env(base: Optional[dict] = None) -> dict:
     env = dict(base if base is not None else os.environ)
     if not str(env.get("CURSOR_API_KEY", "")).strip():
         env.pop("CURSOR_API_KEY", None)
+        if base is None:
+            key = load_api_key()
+            if key:
+                env["CURSOR_API_KEY"] = key
     return env
 
 

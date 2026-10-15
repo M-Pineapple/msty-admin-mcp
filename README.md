@@ -379,4 +379,3 @@ Thank you for considering supporting my work! 🙏
 ## Support
 
 For issues, questions, or feature requests, visit: https://github.com/M-Pineapple/msty-admin-mcp
-[![MseeP.ai Security Assessment Badge](https://mseep.net/pr/m-pineapple-msty-admin-mcp-badge.png)](https://mseep.ai/app/m-pineapple-msty-admin-mcp)

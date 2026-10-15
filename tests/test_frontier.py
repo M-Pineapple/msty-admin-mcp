@@ -68,7 +68,8 @@ def test_parse_uses_last_json_object_when_logs_precede_it():
 def test_build_argv_resumes_and_stays_read_only():
     argv = build_argv("/bin/cursor-agent", "What is 2+2?", "chat-9", "/tmp/desk", "test-key")
     assert argv[0] == "/bin/cursor-agent"
-    assert argv[1:3] == ["--api-key", "test-key"]
+    assert "--api-key" not in argv
+    assert "test-key" not in argv
     assert "--resume" in argv and "chat-9" in argv
     assert "--mode" in argv and argv[argv.index("--mode") + 1] == "ask"
     assert "--force" not in argv

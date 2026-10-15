@@ -377,7 +377,10 @@ class TestDatabaseLayer:
             "SELECT config FROM languageModelsProviders",
             database_path=str(temp_studio_db),
         )
-        payload = json.loads(configs[0]["config"])
+        # Free SQL never sees raw JSON config; entity tools return it redacted.
+        assert configs[0]["config"] is None
+        rows = db.fetch_all("languageModelsProviders", database_path=str(temp_studio_db))
+        payload = json.loads(rows[0]["config"])
         assert payload["apiKey"] == "[REDACTED]"
         assert payload["name"] == "ok"
 
@@ -556,3 +559,82 @@ class TestCredentialAuthorizerGuard:
             except sqlite3.DatabaseError:
                 value = None
         assert value is None
+
+
+class TestFreeSqlBypassGuards:
+    """Guard tests for the 15 Oct sweep. Dummy values only."""
+
+    PLAIN = "zzDUMMYnotARealKey0000abcd"
+
+    def _db(self, tmp_path: Path) -> str:
+        p = tmp_path / "bypass.db"
+        conn = sqlite3.connect(str(p))
+        conn.execute("CREATE TABLE languageModelsProviders (id TEXT, config TEXT, accessToken TEXT, baseUrl TEXT)")
+        conn.execute(
+            "INSERT INTO languageModelsProviders VALUES ('p', ?, ?, ?)",
+            (json.dumps({"apiKey": self.PLAIN, "accessToken": self.PLAIN}), self.PLAIN, f"https://u:{self.PLAIN}@h/"),
+        )
+        conn.commit()
+        conn.close()
+        return str(p)
+
+    @pytest.mark.parametrize("query", [
+        "SELECT substr(config, 1, 200) AS v FROM languageModelsProviders",
+        "SELECT 'x' || config AS v FROM languageModelsProviders",
+        "SELECT hex(config) AS v FROM languageModelsProviders",
+        "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<80) "
+        "SELECT group_concat(unicode(substr(config,i,1))) AS v FROM languageModelsProviders, n",
+        "SELECT baseUrl AS v FROM languageModelsProviders",
+    ])
+    def test_string_functions_cannot_slice_secrets(self, tmp_path: Path, query: str):
+        rows, _ = db.safe_query(query, database_path=self._db(tmp_path))
+        self._assert_no_secret(rows)
+
+    def _assert_no_secret(self, rows):
+        text = json.dumps(rows, default=lambda b: b.hex() if isinstance(b, bytes) else str(b))
+        assert self.PLAIN not in text
+        assert self.PLAIN.encode().hex() not in text.lower()
+        codes = ",".join(str(ord(c)) for c in self.PLAIN)
+        assert codes not in text
+
+    def test_camel_case_credential_column_refused(self, tmp_path: Path):
+        with pytest.raises(ValueError):
+            db.safe_query("SELECT accessToken FROM languageModelsProviders", database_path=self._db(tmp_path))
+
+    def test_camel_case_json_keys_redacted(self, tmp_path: Path):
+        rows = db.fetch_all("languageModelsProviders", database_path=self._db(tmp_path))
+        assert self.PLAIN not in json.dumps(rows)
+
+    @pytest.mark.parametrize("table", ["sqlite_dbpage", "dbstat"])
+    def test_raw_page_tables_denied(self, tmp_path: Path, table: str):
+        path = self._db(tmp_path)
+        try:
+            rows, _ = db.safe_query(f"SELECT * FROM {table}", database_path=path)
+        except (sqlite3.DatabaseError, ValueError):
+            return
+        self._assert_no_secret(rows)
+
+    def test_runaway_query_is_interrupted(self, tmp_path: Path):
+        with pytest.raises(sqlite3.OperationalError):
+            db.safe_query(
+                "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n) SELECT count(*) FROM n",
+                database_path=self._db(tmp_path),
+            )
+
+    @pytest.mark.parametrize("column", ["data", "metadata", "options", "payload", "credentials"])
+    def test_generic_json_blob_columns_not_sliceable(self, tmp_path: Path, column: str):
+        p = tmp_path / "blob.db"
+        conn = sqlite3.connect(str(p))
+        conn.execute(f"CREATE TABLE someStudioTable (id TEXT, {column} TEXT)")
+        conn.execute("INSERT INTO someStudioTable VALUES ('x', ?)", (json.dumps({"apiKey": self.PLAIN}),))
+        conn.commit()
+        conn.close()
+        try:
+            rows, _ = db.safe_query(
+                "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<80) "
+                f"SELECT group_concat(unicode(substr({column},i,1))) AS v FROM someStudioTable, n",
+                database_path=str(p),
+            )
+        except ValueError:
+            return  # refused outright is also safe
+        self._assert_no_secret(rows)
