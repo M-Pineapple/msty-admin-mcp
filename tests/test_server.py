@@ -804,3 +804,73 @@ def test_fetch_all_redacts_cli_flag_values(tmp_path: Path):
     text = json.dumps(rows)
     assert secret not in text
     assert "some-mcp" in text and "--api-key" in text
+
+
+class TestGeneratedColumnsAndRawArgs:
+    PLAIN = "zzDUMMYnotARealKey0000abcd"
+
+    @pytest.fixture(autouse=True)
+    def _no_text_precheck(self, monkeypatch):
+        monkeypatch.setattr(db, "names_credential_column", lambda _q: False)
+
+    def _db(self, tmp_path: Path) -> str:
+        p = tmp_path / "gen.db"
+        conn = sqlite3.connect(str(p))
+        conn.execute(
+            "CREATE TABLE t (id TEXT, apiKey TEXT, "
+            "v TEXT GENERATED ALWAYS AS (substr(apiKey, 1, 100)) VIRTUAL, "
+            "s TEXT GENERATED ALWAYS AS ('x' || apiKey) STORED, "
+            "h TEXT GENERATED ALWAYS AS (hex(apiKey)) VIRTUAL)"
+        )
+        conn.execute("INSERT INTO t (id, apiKey) VALUES ('a', ?)", (self.PLAIN,))
+        conn.commit()
+        conn.close()
+        return str(p)
+
+    @pytest.mark.parametrize("expr", ["v", "s", "h", "substr(v, 3, 7)", "s || ''", "unicode(substr(s, 4, 1))"])
+    def test_generated_columns_read_null(self, tmp_path: Path, expr: str):
+        rows, _ = db.safe_query(f"SELECT {expr} AS out FROM t", database_path=self._db(tmp_path))
+        text = json.dumps(rows)
+        assert self.PLAIN[:7] not in text and self.PLAIN.encode().hex()[:14].upper() not in text
+        assert rows[0]["out"] in (None, "")
+
+    def test_ordinary_columns_still_readable_next_to_generated(self, tmp_path: Path):
+        rows, _ = db.safe_query("SELECT id FROM t", database_path=self._db(tmp_path))
+        assert rows == [{"id": "a"}]
+
+    @pytest.mark.parametrize("raw", [
+        "npx -y some-mcp --api-key {k}",
+        "npx some-mcp --api-key={k}",
+        "npx some-mcp --token '{k}'",
+        'npx some-mcp -H "Authorization: Bearer {k}"',
+        "npx some-mcp --unbalanced 'quote --secret {k}",
+        "npx some-mcp --model gpt {k}",
+        "npx some-mcp --key-file /x --opt sk-proj-abc123DEF456",
+        "npx some-mcp xai-AbC123dEf456GhI789",
+        "npx some-mcp ghp_ABCdef1234567890ABCdef12",
+    ])
+    def test_raw_string_args_redacted(self, tmp_path: Path, raw: str):
+        value = raw.format(k=self.PLAIN)
+        p = tmp_path / "args.db"
+        conn = sqlite3.connect(str(p))
+        conn.execute("CREATE TABLE mcpServers (id TEXT, args TEXT)")
+        conn.execute("INSERT INTO mcpServers VALUES ('m', ?)", (value,))
+        conn.commit()
+        conn.close()
+        text = json.dumps(db.fetch_all("mcpServers", database_path=str(p)))
+        for secret in (self.PLAIN, "sk-proj-abc123DEF456", "xai-AbC123dEf456GhI789", "ghp_ABCdef1234567890ABCdef12"):
+            assert secret not in text
+        assert "some-mcp" in text
+
+    def test_key_detector_spares_ordinary_arguments(self):
+        for ok in ["-y", "@modelcontextprotocol/server-filesystem", "/Users/me/projects", "some-mcp",
+                   "--port", "8080", "claude-3-5-sonnet-20241022", "localhost:11434"]:
+            assert not db._looks_like_key(ok), ok
+        for bad in ["sk-proj-abc123DEF456", self.PLAIN, "xai-AbC123dEf456GhI789", "A1b2C3d4E5f6G7h8I9j0K1l2M3n4"]:
+            assert db._looks_like_key(bad), bad
+
+    @pytest.mark.parametrize("raw", ["npx m --api-key passwordpassword", "npx m --token=passwordpassword",
+                                     "npx m --client-secret passwordpassword"])
+    def test_low_entropy_value_after_secret_flag_redacted(self, tmp_path: Path, raw: str):
+        assert not db._looks_like_key("passwordpassword")
+        assert "passwordpassword" not in db._redact_command_line(raw)

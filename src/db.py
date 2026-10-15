@@ -5,7 +5,9 @@ Read-only access to the Msty Studio workspace SQLite database.
 from __future__ import annotations
 
 import json
+import math
 import re
+import shlex
 import sqlite3
 import time
 from pathlib import Path
@@ -164,6 +166,8 @@ def redact_value(key: str, value: Any) -> Any:
             return json.dumps(redacted) if not isinstance(redacted, str) else redacted
         if _is_sensitive_key(key) and value not in (None, "", [], {}):
             return "[REDACTED]"
+        if key.lower() in _COMMAND_LINE_COLUMNS:
+            return _redact_command_line(value)
         return _redact_secret_patterns(value)
     if _is_sensitive_key(key) and value not in (None, "", [], {}):
         return "[REDACTED]"
@@ -177,9 +181,28 @@ def redact_value(key: str, value: Any) -> Any:
 _FLAG_RE = re.compile(r"^-{1,2}([A-Za-z0-9_.-]+)(?:=(.*))?$", re.DOTALL)
 
 
+_KEY_PREFIXES = ("sk-", "xai-", "ghp_", "gho_", "ghs_", "ghu_", "github_pat_", "glpat-",
+                 "xoxb-", "xoxp-", "xoxa-", "akia", "aiza", "hf_", "pk_live_", "rk_live_")
+_KEYISH_RE = re.compile(r"^[A-Za-z0-9_\-+=./]{24,}$")
+
+
+def _looks_like_key(value: str) -> bool:
+    v = value.strip()
+    if v.lower().startswith(_KEY_PREFIXES) and len(v) >= 10:
+        return True
+    if not _KEYISH_RE.match(v) or v.count("/") > 1 or v.startswith(("@", "-", ".", "/")):
+        return False
+    if not (re.search(r"[0-9]", v) and re.search(r"[A-Za-z]", v)):
+        return False
+    counts = {c: v.count(c) for c in set(v)}
+    entropy = -sum(n / len(v) * math.log2(n / len(v)) for n in counts.values())
+    return entropy >= 4.0
+
+
 def _redact_arg_list(key: str, items: list) -> list:
     """Redact list items, including the value after a secret-named CLI flag
-    (`--api-key VALUE`, `--token=VALUE`, `-H "Authorization: ..."`)."""
+    (`--api-key VALUE`, `--token=VALUE`, `-H "Authorization: ..."`) and any
+    value that looks like a key (known prefixes or long high-entropy text)."""
     out: list = []
     redact_next = False
     for item in items:
@@ -190,15 +213,39 @@ def _redact_arg_list(key: str, items: list) -> list:
         redact_next = False
         if isinstance(item, str):
             m = _FLAG_RE.match(item)
-            if m and (_is_sensitive_key(m.group(1)) or m.group(1).lower() in {"h", "header"}):
+            if m:
+                name = m.group(1)
+                secret_flag = _is_sensitive_key(name) or name.lower() in {"h", "header"}
                 if m.group(2) is not None:
-                    out.append(f"{item.split('=', 1)[0]}=[REDACTED]")
-                else:
+                    if secret_flag or _looks_like_key(m.group(2)):
+                        out.append(f"{item.split('=', 1)[0]}=[REDACTED]")
+                    else:
+                        out.append(item)
+                    continue
+                if secret_flag:
                     out.append(item)
                     redact_next = True
+                    continue
+            if _looks_like_key(item):
+                out.append("[REDACTED]")
                 continue
         out.append(redact_value(key, item))
     return out
+
+
+def _split_command_line(text: str) -> list:
+    try:
+        return shlex.split(text)
+    except ValueError:
+        return re.findall(r"\S+", text)
+
+
+def _redact_command_line(text: str) -> str:
+    parts = _split_command_line(text)
+    redacted = _redact_arg_list("", parts)
+    if redacted == parts:
+        return _redact_secret_patterns(text)
+    return shlex.join(redacted)
 
 
 # Free-form SQL (safe_query) must never see these raw: they hold JSON that can
@@ -449,6 +496,24 @@ def fetch_by_id(
         return redact_row(dict(row)) if row else None
 
 
+def _generated_columns(conn: sqlite3.Connection) -> set:
+    """(table, column) pairs for every VIRTUAL or STORED generated column."""
+    conn.set_authorizer(None)
+    found: set = set()
+    try:
+        tables = [r[0] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type IN ('table', 'view')")]
+        for table in tables:
+            quoted = '"' + table.replace('"', '""') + '"'
+            for row in conn.execute(f"PRAGMA table_xinfo({quoted})"):
+                # columns: cid, name, type, notnull, dflt_value, pk, hidden
+                if row[6] in (2, 3):
+                    found.add((table.lower(), str(row[1]).lower()))
+    finally:
+        conn.set_authorizer(_credential_authorizer)
+    return found
+
+
 def safe_query(
     query: str,
     limit: int = 100,
@@ -462,7 +527,16 @@ def safe_query(
         raise ValueError("Queries must not select credential columns")
 
     with connect(database_path=database_path) as conn:
-        conn.set_authorizer(_free_sql_authorizer)
+        generated = _generated_columns(conn)
+
+        def authorizer(action, arg1, arg2, dbname, source):
+            # Generated columns can re-expose a secret column under a harmless
+            # name (substr(apiKey, 1) AS v). Treat every one as secret.
+            if action == sqlite3.SQLITE_READ and ((arg1 or "").lower(), (arg2 or "").lower()) in generated:
+                return sqlite3.SQLITE_IGNORE
+            return _free_sql_authorizer(action, arg1, arg2, dbname, source)
+
+        conn.set_authorizer(authorizer)
         deadline = time.monotonic() + _FREE_SQL_TIMEOUT_S
         # Non-zero return aborts the statement (runaway recursive CTEs etc.).
         conn.set_progress_handler(lambda: int(time.monotonic() > deadline), 10_000)
