@@ -13,7 +13,8 @@ Phase 5: Tiered AI Workflow (Calibration)
 Created by M-Pineapple 🍍
 """
 
-__version__ = "6.1.3"
+from .version import __version__
+
 __author__ = "M-Pineapple 🍍"
 
 from .server import mcp, main

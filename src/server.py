@@ -27,6 +27,7 @@ except ImportError:
     sys.exit(1)
 
 from src import analytics, db, inventory, nexus
+from src.version import __version__ as SERVER_VERSION
 from src.paths import (
     MstyInstallation,
     detect_msty_installation as _detect_install,
@@ -41,10 +42,12 @@ from src.services import (
     service_status_map,
 )
 
-SERVER_VERSION = "6.1.3"
 TOOL_COUNT = 56
 
 mcp = FastMCP("msty-admin-mcp", f"v{SERVER_VERSION}")
+# FastMCP 1.x has no version= argument. Unset Server.version makes
+# initialize report the MCP SDK version (e.g. 1.30.0) instead of us.
+mcp._mcp_server.version = SERVER_VERSION
 
 
 @dataclass
@@ -725,33 +728,9 @@ def identify_handoff_triggers() -> str:
 @mcp.tool()
 def get_calibration_history(model_id: Optional[str] = None, limit: int = 50) -> str:
     """Get calibration history from ~/.msty-admin metrics DB."""
-    from src.phase4_5_tools import get_metrics_db_path
+    from src.phase4_5_tools import fetch_calibration_history
 
-    path = get_metrics_db_path()
-    if not path.exists():
-        return _json({"model_id": model_id, "limit": limit, "history": []})
-    import sqlite3
-
-    conn = sqlite3.connect(str(path))
-    conn.row_factory = sqlite3.Row
-    try:
-        if model_id:
-            rows = conn.execute(
-                "SELECT * FROM calibration_tests WHERE model_id = ? ORDER BY created_at DESC LIMIT ?",
-                (model_id, limit),
-            ).fetchall()
-        else:
-            rows = conn.execute(
-                "SELECT * FROM calibration_tests ORDER BY created_at DESC LIMIT ?",
-                (limit,),
-            ).fetchall()
-        history = [dict(r) for r in rows]
-    except Exception as exc:
-        history = []
-        return _json({"model_id": model_id, "limit": limit, "history": history, "error": str(exc)})
-    finally:
-        conn.close()
-    return _json({"model_id": model_id, "limit": limit, "history": history})
+    return _json(fetch_calibration_history(model_id=model_id, limit=limit))
 
 
 # ---------------------------------------------------------------------------
@@ -923,7 +902,13 @@ def list_agent_plans(limit: int = 100) -> str:
 
 @mcp.tool()
 def get_studio_entity(entity: str, entity_id: str) -> str:
-    """Fetch a single Studio entity by type and id."""
+    """Fetch a single Studio entity by type and id.
+
+    ``entity`` is a catalogue key. Plural names are canonical
+    (``personas``, ``crews``, ``knowledge_stacks``, …). Singular aliases
+    (``persona``, ``crew``, ``knowledge_stack``) are accepted. Hyphens are
+    treated as underscores. Unknown values return the allowed list.
+    """
     return _json(inventory.get_entity(entity, entity_id))
 
 

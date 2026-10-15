@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### Fixed
+
+- `get_calibration_history` no longer queries a `created_at` column. The sidecar metrics table uses `timestamp` (Studio 2.9 entity tables use camelCase `createdAt`). The tool now picks whichever time column exists.
+- MCP `initialize` `serverInfo.version` is the package version, not the MCP SDK version. FastMCP 1.x does not take a `version=` argument, so the inner server version is set from the same source as `pyproject.toml`.
+- `get_studio_entity` accepts singular names (`persona`, `crew`, …) as aliases for the plural catalogue keys.
+- Tests cover `get_calibration_history` with `model_id` against a `timestamp`-only table, and `list_entities("persona")`.
+
+### Changed
+
+- README: Python 3.10+ requirement called out against macOS system `python3` 3.9, with a Homebrew example. Claude Desktop and Cursor `mcp.json` snippets for the admin server. Removed the stale "Latest: v6.1.1" line.
+
 ## v6.1.3 — 2026-10-14
 
 ### Added

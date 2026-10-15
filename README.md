@@ -17,7 +17,7 @@ Comprehensive MCP server for administering **Msty Studio Desktop 2.9+** with **5
 
 **Requirements**: Python 3.10+, MCP SDK v1.0.0+, psutil 5.9.0+
 
-**Latest**: v6.1.1 (2026-10-13) — stored API keys are now better protected in `read_msty_database`. Please update.
+macOS ships `python3` 3.9. This package will not install on that interpreter. Use Homebrew Python 3.12 (or any 3.10+) as shown below.
 
 > **New to Bloom?** Jump to the [Bloom Behavioral Evaluation](#bloom-behavioral-evaluation) section or read the [full Bloom guide](docs/BLOOM_GUIDE.md).
 
@@ -26,11 +26,18 @@ Comprehensive MCP server for administering **Msty Studio Desktop 2.9+** with **5
 ## Installation
 
 ### Quick Start
-Needs Python 3.10 or newer.
+
+Python 3.10 or newer is required. On macOS the system `python3` is 3.9, so create the venv with Homebrew Python:
+
 ```bash
+brew install python@3.12
+python3.12 -m venv .venv
+source .venv/bin/activate
 pip install msty-admin-mcp
 msty-admin-mcp  # Runs on stdio (default MCP transport)
 ```
+
+If you already have Python 3.10+ as `python3`, `python3 -m venv .venv` is enough. Then `pip install msty-admin-mcp` as above.
 
 If `pip install msty-admin-mcp` cannot find the package, install the release straight from GitHub:
 ```bash
@@ -53,6 +60,38 @@ pytest tests/ -v
 ```
 
 This server targets the 1.x MCP Python SDK (`mcp>=1.0.0,<2`).
+
+### Claude Desktop and Cursor
+
+After `pip install msty-admin-mcp`, the console script `msty-admin-mcp` is on that environment's PATH. Point the host at it.
+
+**Claude Desktop** — merge into `~/Library/Application Support/Claude/claude_desktop_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "msty-admin": {
+      "command": "msty-admin-mcp"
+    }
+  }
+}
+```
+
+**Cursor** — merge into `~/.cursor/mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "msty-admin": {
+      "command": "msty-admin-mcp"
+    }
+  }
+}
+```
+
+If the host cannot see the script, set `command` to the absolute path of `msty-admin-mcp` inside the venv (`…/bin/msty-admin-mcp`). Restart the host after editing.
+
+The Frontier one-tool server is separate. See [Hybrid local model and Cursor agent](#hybrid-local-model-and-cursor-agent).
 
 ---
 
@@ -255,7 +294,7 @@ The admin server is unchanged for Studio inventory and the other 55 tools. Add t
 - `list_shadow_personas`, `list_crews`, `list_knowledge_stacks`
 - `list_turnstiles`, `list_skills`, `list_live_contexts`, `list_prompts`
 - `list_context_studio`, `list_agent_plans`
-- `get_studio_entity`, `get_schema_migrations`, `export_workflow_pack`
+- `get_studio_entity` (plural keys such as `personas`, plus singular aliases such as `persona`), `get_schema_migrations`, `export_workflow_pack`
 
 ### Phase 8: Nexus Bridge (4)
 - `detect_nexus`, `list_nexus_models`, `query_nexus`, `get_insights_usage`

@@ -187,13 +187,39 @@ ENTITY_CATALOG: Dict[str, Dict[str, Any]] = {
 }
 
 
+def _singular(key: str) -> str:
+    if key.endswith("ies") and len(key) > 3:
+        return key[:-3] + "y"
+    if key.endswith("s") and len(key) > 1:
+        return key[:-1]
+    return key
+
+
+ENTITY_ALIASES: Dict[str, str] = {_singular(k): k for k in ENTITY_CATALOG}
+
+
+def resolve_entity_key(entity: str) -> Optional[str]:
+    """Map a user-supplied entity name onto ENTITY_CATALOG.
+
+    Accepts canonical plural keys, singular aliases (persona → personas),
+    and hyphenated forms (knowledge-stack → knowledge_stacks).
+    """
+    key = entity.strip().lower().replace("-", "_").replace(" ", "_")
+    if key in ENTITY_CATALOG:
+        return key
+    return ENTITY_ALIASES.get(key)
+
+
 def list_entities(entity: str, limit: int = 100) -> Dict[str, Any]:
-    meta = ENTITY_CATALOG.get(entity)
+    resolved = resolve_entity_key(entity)
+    meta = ENTITY_CATALOG.get(resolved) if resolved else None
     if not meta:
         return {
             "error": f"Unknown entity '{entity}'",
             "available": sorted(ENTITY_CATALOG.keys()),
+            "aliases": sorted(ENTITY_ALIASES.keys()),
         }
+    entity = resolved  # type: ignore[assignment]
     table = meta["table"]
     if not db.table_exists(table):
         return {
@@ -218,12 +244,15 @@ def list_entities(entity: str, limit: int = 100) -> Dict[str, Any]:
 
 
 def get_entity(entity: str, entity_id: str) -> Dict[str, Any]:
-    meta = ENTITY_CATALOG.get(entity)
+    resolved = resolve_entity_key(entity)
+    meta = ENTITY_CATALOG.get(resolved) if resolved else None
     if not meta:
         return {
             "error": f"Unknown entity '{entity}'",
             "available": sorted(ENTITY_CATALOG.keys()),
+            "aliases": sorted(ENTITY_ALIASES.keys()),
         }
+    entity = resolved  # type: ignore[assignment]
     table = meta["table"]
     row = db.fetch_by_id(table, entity_id)
     if not row:
@@ -254,7 +283,8 @@ def export_workflow_pack(
         "entities": {},
     }
     for key in keys:
-        pack["entities"][key] = list_entities(key, limit=limit)
+        resolved = resolve_entity_key(key) or key
+        pack["entities"][resolved] = list_entities(resolved, limit=limit)
     return pack
 
 

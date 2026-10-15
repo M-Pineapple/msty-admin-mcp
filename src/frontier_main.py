@@ -9,8 +9,10 @@ from __future__ import annotations
 from mcp.server.fastmcp import FastMCP
 
 from src.frontier import ask_cursor_agent
+from src.version import __version__ as SERVER_VERSION
 
-mcp = FastMCP("msty-frontier", "v6.1.3")
+mcp = FastMCP("msty-frontier", f"v{SERVER_VERSION}")
+mcp._mcp_server.version = SERVER_VERSION
 
 
 @mcp.tool()

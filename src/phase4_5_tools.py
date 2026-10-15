@@ -68,6 +68,65 @@ def get_metrics_db_path() -> Path:
     return Path.home() / ".msty-admin" / "msty_admin_metrics.db"
 
 
+# Studio 2.9 Drizzle tables use camelCase createdAt. This sidecar DB
+# (init_metrics_db) uses timestamp. Older drafts used created_at.
+_HISTORY_TIME_COLUMNS = ("timestamp", "created_at", "createdAt")
+
+
+def table_order_column(conn: sqlite3.Connection, table: str) -> str:
+    """Pick a real time column from PRAGMA table_info, else rowid."""
+    if not table.isidentifier():
+        raise ValueError(f"invalid table name: {table}")
+    cols = {row[1] for row in conn.execute(f'PRAGMA table_info("{table}")')}
+    for name in _HISTORY_TIME_COLUMNS:
+        if name in cols:
+            return name
+    return "rowid"
+
+
+def fetch_calibration_history(
+    model_id: Optional[str] = None,
+    limit: int = 50,
+) -> Dict[str, Any]:
+    """Read calibration_tests ordered by whichever time column exists."""
+    path = get_metrics_db_path()
+    payload: Dict[str, Any] = {"model_id": model_id, "limit": limit, "history": []}
+    if not path.exists():
+        return payload
+
+    conn = sqlite3.connect(str(path))
+    conn.row_factory = sqlite3.Row
+    try:
+        tables = {
+            row[0]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            )
+        }
+        if "calibration_tests" not in tables:
+            return payload
+        order = table_order_column(conn, "calibration_tests")
+        if model_id:
+            rows = conn.execute(
+                f"SELECT * FROM calibration_tests WHERE model_id = ? "
+                f"ORDER BY {order} DESC LIMIT ?",
+                (model_id, limit),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                f"SELECT * FROM calibration_tests ORDER BY {order} DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        payload["history"] = [dict(r) for r in rows]
+        payload["ordered_by"] = order
+        return payload
+    except Exception as exc:
+        payload["error"] = str(exc)
+        return payload
+    finally:
+        conn.close()
+
+
 def init_metrics_db():
     """Initialize metrics database with required tables."""
     db_path = get_metrics_db_path()
