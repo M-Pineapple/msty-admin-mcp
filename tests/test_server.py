@@ -614,6 +614,7 @@ class TestFreeSqlBypassGuards:
             return
         self._assert_no_secret(rows)
 
+    @pytest.mark.timeout(20, method="thread")
     def test_runaway_query_is_interrupted(self, tmp_path: Path):
         with pytest.raises(sqlite3.OperationalError):
             db.safe_query(
@@ -638,3 +639,97 @@ class TestFreeSqlBypassGuards:
         except ValueError:
             return  # refused outright is also safe
         self._assert_no_secret(rows)
+
+
+class TestRedTeamFollowUp:
+    """Guards for the red-team follow-up on the 15 Oct sweep. Dummy values only."""
+
+    PLAIN = "zzDUMMYnotARealKey0000abcd"
+
+    def _assert_no_secret(self, rows):
+        text = json.dumps(rows, default=lambda b: b.hex() if isinstance(b, bytes) else str(b))
+        assert self.PLAIN not in text
+        assert self.PLAIN.encode().hex() not in text.lower()
+        for i in range(0, len(self.PLAIN) - 8):
+            assert self.PLAIN[i:i + 8] not in text
+
+    def _url_db(self, tmp_path: Path, column: str = "baseUrl") -> str:
+        p = tmp_path / "url.db"
+        conn = sqlite3.connect(str(p))
+        conn.execute(f"CREATE TABLE providers (id TEXT, {column} TEXT)")
+        conn.execute("INSERT INTO providers VALUES ('p', ?)", (f"https://u:{self.PLAIN}@h.example/v1",))
+        conn.commit()
+        conn.close()
+        return str(p)
+
+    @pytest.mark.parametrize("expr", [
+        "substr(baseUrl, 9)", "substr(baseUrl, 11)", "substr(baseUrl, 11, 12)",
+        "ltrim(baseUrl, 'htps:/')", "upper(baseUrl)",
+    ])
+    def test_url_credentials_redacted_without_scheme(self, tmp_path: Path, expr: str):
+        rows, _ = db.safe_query(f"SELECT {expr} AS v FROM providers", database_path=self._url_db(tmp_path))
+        self._assert_no_secret(rows)
+
+    def test_url_credentials_in_unlisted_column_redacted(self, tmp_path: Path):
+        rows, _ = db.safe_query("SELECT substr(note, 9) AS v FROM providers",
+                                database_path=self._url_db(tmp_path, "note"))
+        self._assert_no_secret(rows)
+
+    def test_bare_userinfo_pattern_redacted(self):
+        assert self.PLAIN not in db._redact_secret_patterns(f"u:{self.PLAIN}@h.example/v1")
+
+    @pytest.mark.parametrize("column", ["openaiKey", "apiKeys", "authHeader", "keyValue", "providerAuth", "dbPassword"])
+    def test_wider_camel_case_names_are_secret(self, tmp_path: Path, column: str):
+        assert db._is_sensitive_key(column)
+        p = tmp_path / "camel.db"
+        conn = sqlite3.connect(str(p))
+        conn.execute(f"CREATE TABLE t (id TEXT, {column} TEXT)")
+        conn.execute("INSERT INTO t VALUES ('x', ?)", (self.PLAIN,))
+        conn.commit()
+        conn.close()
+        rows = db.fetch_all("t", database_path=str(p))
+        self._assert_no_secret(rows)
+        try:
+            rows, _ = db.safe_query(f"SELECT substr({column}, 2) AS v FROM t", database_path=str(p))
+        except ValueError:
+            return
+        self._assert_no_secret(rows)
+
+    @pytest.mark.parametrize("column", ["id", "primaryKey", "sortKey", "keyId", "promptTokens", "maxTokens", "modelId", "name"])
+    def test_identifier_columns_stay_readable(self, column: str):
+        assert not db._is_sensitive_key(column)
+
+    def test_raw_page_table_denied_by_authorizer(self):
+        for table in ("sqlite_dbpage", "dbstat"):
+            for column in ("data", "pgno", "name", "anything"):
+                assert db._credential_authorizer(sqlite3.SQLITE_READ, table, column, "main", None) == sqlite3.SQLITE_DENY
+
+    def test_raw_page_table_denied_with_benign_column_names(self, tmp_path: Path):
+        p = tmp_path / "page.db"
+        conn = sqlite3.connect(str(p))
+        conn.execute("CREATE TABLE notes (id TEXT, body TEXT)")
+        conn.execute("INSERT INTO notes VALUES ('x', ?)", (self.PLAIN,))
+        conn.commit()
+        conn.close()
+        with sqlite3.connect(str(p)) as probe:
+            try:
+                probe.execute("SELECT data FROM sqlite_dbpage LIMIT 1").fetchall()
+            except sqlite3.OperationalError:
+                pytest.skip("this SQLite build has no sqlite_dbpage")
+        with pytest.raises((sqlite3.DatabaseError, ValueError)):
+            db.safe_query("SELECT data FROM sqlite_dbpage", database_path=str(p))
+
+
+def test_streamable_http_transport_serves_mcp(monkeypatch):
+    import src.server as server
+
+    calls = {}
+    monkeypatch.setattr(server.mcp, "run", lambda *a, **k: calls.update(args=a, kwargs=k))
+    monkeypatch.setattr(sys, "argv", ["msty-admin-mcp", "--transport", "streamable-http", "--port", "8765"])
+    server.main()
+    assert calls["kwargs"].get("transport") == "streamable-http"
+    assert server.mcp.settings.host == "127.0.0.1"
+    assert server.mcp.settings.port == 8765
+    app = server.mcp.streamable_http_app()
+    paths = {getattr(r, "path", None) for r in app.routes}
+    assert server.mcp.settings.streamable_http_path in paths

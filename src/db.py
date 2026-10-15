@@ -78,6 +78,8 @@ _SECRET_VALUE_RE = re.compile(
     re.IGNORECASE,
 )
 _URL_USERINFO_RE = re.compile(r"([a-z][a-z0-9+.-]*://)[^/\s@]+@", re.IGNORECASE)
+# userinfo with the scheme cut off (e.g. substr(baseUrl, 9)): "user:pass@host" or "pass@host/".
+_BARE_USERINFO_RE = re.compile(r"(?<![\w.+-])[^\s/@:'\"]+(?::[^\s/@'\"]*)?@(?=[A-Za-z0-9.-]+[:/])")
 # Raw page / storage introspection tables bypass every column check.
 _RAW_STORAGE_TABLES = {"sqlite_dbpage", "dbstat"}
 _FREE_SQL_TIMEOUT_S = 5.0
@@ -86,9 +88,25 @@ _HEX_BLOB_RE = re.compile(r"\A(?:[0-9a-fA-F]{2}){8,}\Z")
 
 # camelCase / kebab-case names (accessToken, clientSecret, x-api-key) fold to these.
 _SENSITIVE_FOLDED_SUFFIXES = (
-    "apikey", "secret", "token", "password", "passwd", "credential", "credentials",
-    "authorization", "privatekey", "secretkey", "accesskey", "accesskeyid",
+    "apikey", "secret", "secrets", "token", "password", "passwords", "passwd",
+    "credential", "credentials", "authorization", "privatekey", "secretkey",
+    "accesskey", "accesskeyid", "key", "keys", "header", "headers", "auth",
 )
+_SENSITIVE_FOLDED_PREFIXES = (
+    "keyvalue", "keymaterial", "keydata", "secret", "password", "credential", "apikey",
+    "authtoken", "authheader", "accesstoken", "refreshtoken", "privatekey",
+)
+# Identifier / index style names that end in "key" but never hold a secret.
+_SAFE_FOLDED_NAMES = {
+    "primarykey", "foreignkey", "sortkey", "partitionkey", "cachekey", "groupkey",
+    "idempotencykey", "lookupkey", "uniquekey", "rowkey", "indexkey", "shortcutkey",
+    "hotkey", "keyid", "keyname", "keys_count",
+}
+# Usage counters such as promptTokens / maxTokens are numbers, not secrets.
+_TOKEN_COUNTER_HINTS = ("count", "limit", "usage", "max", "min", "total", "prompt", "completion", "used")
+# Columns that commonly embed userinfo (user:pass@host). Free-form SQL reads them as NULL;
+# fetch_all / fetch_by_id still return them with userinfo redacted.
+_URL_LIKE_SUFFIXES = ("url", "uri", "endpoint", "dsn", "proxy", "webhook", "connectionstring")
 
 
 def _is_sensitive_key(key: str) -> bool:
@@ -96,7 +114,11 @@ def _is_sensitive_key(key: str) -> bool:
     if lower in SENSITIVE_EXACT:
         return True
     folded = re.sub(r"[^a-z0-9]", "", lower)
-    if folded.endswith(_SENSITIVE_FOLDED_SUFFIXES) and not folded.endswith("tokens"):
+    if folded in _SAFE_FOLDED_NAMES or folded == "id" or folded.endswith("id"):
+        return False
+    if folded.endswith("tokens") or ("token" in folded and any(h in folded for h in _TOKEN_COUNTER_HINTS)):
+        return False
+    if folded.endswith(_SENSITIVE_FOLDED_SUFFIXES) or folded.startswith(_SENSITIVE_FOLDED_PREFIXES):
         return True
     # Avoid false positives on promptTokens / completionTokens / totalTokens
     if "tokens" in lower and lower.endswith("tokens"):
@@ -117,6 +139,7 @@ def _try_json(value: str) -> Any:
 def _redact_secret_patterns(value: str, *, decode_hex: bool = True) -> str:
     redacted = _SECRET_VALUE_RE.sub("[REDACTED]", value)
     redacted = _URL_USERINFO_RE.sub(r"\1[REDACTED]@", redacted)
+    redacted = _BARE_USERINFO_RE.sub("[REDACTED]@", redacted)
     if decode_hex and _HEX_BLOB_RE.fullmatch(value):
         try:
             decoded = bytes.fromhex(value).decode("utf-8")
@@ -197,7 +220,10 @@ def _free_sql_authorizer(action, arg1, arg2, dbname, source) -> int:
     verdict = _credential_authorizer(action, arg1, arg2, dbname, source)
     if verdict != sqlite3.SQLITE_OK:
         return verdict
-    if action == sqlite3.SQLITE_READ and (arg2 or "").lower() in _RAW_JSON_COLUMNS:
+    column = (arg2 or "").lower()
+    if action == sqlite3.SQLITE_READ and (
+        column in _RAW_JSON_COLUMNS or column.endswith(_URL_LIKE_SUFFIXES)
+    ):
         return sqlite3.SQLITE_IGNORE
     return sqlite3.SQLITE_OK
 
@@ -390,7 +416,81 @@ def safe_query(
         cursor = conn.execute(query)
         rows = cursor.fetchmany(limit)
         results = [redact_row(dict(r)) for r in rows[:limit]]
-        return results, len(results)
+    known = _known_secret_values(database_path)
+    if known:
+        results = [{k: _scrub_known(v, known) for k, v in row.items()} for row in results]
+    return results, len(results)
+
+
+_KNOWN_SECRET_MIN = 6
+_KNOWN_SECRET_WINDOW = 8
+
+
+def _collect_secrets(key: str, value: Any, out: set) -> None:
+    if isinstance(value, str):
+        parsed = _try_json(value)
+        if parsed is not None:
+            _collect_secrets(key, parsed, out)
+            return
+        if _is_sensitive_key(key) and len(value) >= _KNOWN_SECRET_MIN:
+            out.add(value)
+        for m in _URL_USERINFO_RE.finditer(value):
+            info = value[m.end(1):m.end() - 1]
+            for part in info.split(":"):
+                if len(part) >= _KNOWN_SECRET_MIN:
+                    out.add(part)
+        for m in _SECRET_VALUE_RE.finditer(value):
+            out.add(m.group(0))
+    elif isinstance(value, dict):
+        for k, v in value.items():
+            _collect_secrets(k, v, out)
+    elif isinstance(value, list):
+        for item in value:
+            _collect_secrets(key, item, out)
+    elif isinstance(value, (bytes, bytearray)) and _is_sensitive_key(key):
+        out.add(bytes(value).hex())
+
+
+def _known_secret_values(database_path: Optional[str]) -> set:
+    """Secret values present in the database, so derived output can be scrubbed."""
+    path = get_database_path(database_path)
+    if not path:
+        return set()
+    secrets: set = set()
+    conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    try:
+        tables = [r[0] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")]
+        for table in tables:
+            quoted = '"' + table.replace('"', '""') + '"'
+            cur = conn.execute(f"SELECT * FROM {quoted} LIMIT 5000")
+            names = [d[0] for d in cur.description]
+            for row in cur:
+                for name, value in zip(names, row):
+                    _collect_secrets(name, value, secrets)
+    except sqlite3.Error:
+        pass
+    finally:
+        conn.close()
+    return secrets
+
+
+def _scrub_known(value: Any, known: set) -> Any:
+    """Redact any output that carries a chunk of a known secret (plain, hex or char codes)."""
+    if value is None or isinstance(value, (int, float)):
+        return value
+    text = value.hex() if isinstance(value, (bytes, bytearray)) else str(value)
+    lowered = text.lower()
+    for secret in known:
+        w = min(_KNOWN_SECRET_WINDOW, len(secret))
+        for i in range(0, len(secret) - w + 1):
+            chunk = secret[i:i + w]
+            if chunk in text or chunk.encode().hex() in lowered:
+                return "[REDACTED]"
+        codes = ",".join(str(ord(c)) for c in secret[:w])
+        if codes in text:
+            return "[REDACTED]"
+    return value
 
 
 def database_stats(database_path: Optional[str] = None) -> Dict[str, Any]:
