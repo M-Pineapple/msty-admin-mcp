@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Tests for Msty Admin MCP Server v6.1.3
+Tests for Msty Admin MCP Server v6.1.4
 
 Run with: pytest tests/ -v
 """
@@ -422,7 +422,7 @@ class TestInventoryAnalytics:
 @pytest.mark.usefixtures("fake_studio_db")
 class TestMCPTools:
     def test_server_version(self):
-        assert SERVER_VERSION == "6.1.3"
+        assert SERVER_VERSION == "6.1.4"
 
     def test_detect_msty_installation_returns_json(self):
         data = json.loads(detect_msty_installation())
@@ -454,7 +454,7 @@ class TestMCPTools:
 
     def test_get_server_status_returns_json(self):
         data = json.loads(get_server_status())
-        assert data["server"]["version"] == "6.1.3"
+        assert data["server"]["version"] == "6.1.4"
         assert data["phases"]["phase_9_frontier"] == 1
         assert data["tools_available"] >= 50
 

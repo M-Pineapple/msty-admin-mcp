@@ -1,6 +1,6 @@
 # Msty Admin MCP — Changelog
 
-## Unreleased
+## v6.1.4 — 2026-10-15
 
 ### Fixed
 

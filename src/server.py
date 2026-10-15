@@ -1,5 +1,5 @@
 """
-Msty Admin MCP Server — v6.1.3
+Msty Admin MCP Server — v6.1.4
 ===============================
 
 Administer Msty Studio Desktop 2.9+ with real path/DB detection, entity inventory,
