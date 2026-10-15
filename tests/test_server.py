@@ -733,3 +733,74 @@ def test_streamable_http_transport_serves_mcp(monkeypatch):
     app = server.mcp.streamable_http_app()
     paths = {getattr(r, "path", None) for r in app.routes}
     assert server.mcp.settings.streamable_http_path in paths
+
+
+class TestAuthorizerIsTheBoundary:
+    """The free-SQL boundary is the SQLite authorizer, not output scrubbing.
+
+    The SQL-text pre-check is switched off here so only the authorizer stands
+    between the caller and the secret. Removing the IGNORE rule must fail these.
+    """
+
+    PLAIN = "zzDUMMYnotARealKey0000abcd"
+    COLUMNS = ["openaiKey", "apiKey", "accessToken", "authHeader", "clientSecret",
+               "baseUrl", "config", "args", "metadata"]
+
+    @pytest.fixture(autouse=True)
+    def _no_text_precheck(self, monkeypatch):
+        monkeypatch.setattr(db, "names_credential_column", lambda _q: False)
+
+    def _db(self, tmp_path: Path, column: str) -> str:
+        p = tmp_path / f"{column}.db"
+        conn = sqlite3.connect(str(p))
+        conn.execute(f'CREATE TABLE t (id TEXT, "{column}" TEXT)')
+        conn.execute("INSERT INTO t VALUES ('x', ?)", (self.PLAIN,))
+        conn.commit()
+        conn.close()
+        return str(p)
+
+    def _no_leak(self, rows):
+        text = json.dumps(rows, default=str)
+        joined = text.replace("|", "").replace('"', "")
+        assert self.PLAIN not in joined
+        assert self.PLAIN.encode().hex() not in text.lower()
+        for i in range(0, len(self.PLAIN) - 6, 7):
+            assert self.PLAIN[i:i + 7] not in text
+
+    @pytest.mark.parametrize("column", COLUMNS)
+    def test_seven_char_substr_reassembly_reads_null(self, tmp_path: Path, column: str):
+        q = (
+            "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+7 FROM n WHERE i<40) "
+            f'SELECT group_concat(substr("{column}", i, 7), \'|\') AS v FROM t, n'
+        )
+        rows, _ = db.safe_query(q, database_path=self._db(tmp_path, column))
+        self._no_leak(rows)
+
+    @pytest.mark.parametrize("column", COLUMNS)
+    @pytest.mark.parametrize("expr", ['hex("{c}")', '"{c}" || \'\'', 'unicode(substr("{c}", 3, 1))', 'length("{c}")'])
+    def test_column_is_null_inside_any_expression(self, tmp_path: Path, column: str, expr: str):
+        rows, _ = db.safe_query(f"SELECT {expr.format(c=column)} AS v FROM t", database_path=self._db(tmp_path, column))
+        assert rows[0]["v"] in (None, "")  # hex(NULL) is the empty string
+
+    @pytest.mark.parametrize("column", COLUMNS + ["api_key", "password", "endpoint", "command"])
+    def test_authorizer_ignores_secret_classified_reads(self, column: str):
+        assert db._free_sql_authorizer(sqlite3.SQLITE_READ, "t", column, "main", None) == sqlite3.SQLITE_IGNORE
+
+    @pytest.mark.parametrize("column", ["id", "name", "createdAt", "promptTokens", "modelId", "title"])
+    def test_ordinary_columns_stay_readable(self, column: str):
+        assert db._free_sql_authorizer(sqlite3.SQLITE_READ, "t", column, "main", None) == sqlite3.SQLITE_OK
+
+
+def test_fetch_all_redacts_cli_flag_values(tmp_path: Path):
+    secret = "zzDUMMYnotARealKey0000abcd"
+    p = tmp_path / "mcp.db"
+    conn = sqlite3.connect(str(p))
+    conn.execute("CREATE TABLE mcpServers (id TEXT, name TEXT, args TEXT)")
+    conn.execute("INSERT INTO mcpServers VALUES ('m', 'srv', ?)", (json.dumps(
+        ["-y", "some-mcp", "--api-key", secret, f"--token={secret}", "-H", f"Authorization: {secret}"]),))
+    conn.commit()
+    conn.close()
+    rows = db.fetch_all("mcpServers", database_path=str(p))
+    text = json.dumps(rows)
+    assert secret not in text
+    assert "some-mcp" in text and "--api-key" in text

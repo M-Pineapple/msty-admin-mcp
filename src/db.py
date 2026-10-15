@@ -170,8 +170,35 @@ def redact_value(key: str, value: Any) -> Any:
     if isinstance(value, dict):
         return {k: redact_value(k, v) for k, v in value.items()}
     if isinstance(value, list):
-        return [redact_value(key, item) for item in value]
+        return _redact_arg_list(key, value)
     return value
+
+
+_FLAG_RE = re.compile(r"^-{1,2}([A-Za-z0-9_.-]+)(?:=(.*))?$", re.DOTALL)
+
+
+def _redact_arg_list(key: str, items: list) -> list:
+    """Redact list items, including the value after a secret-named CLI flag
+    (`--api-key VALUE`, `--token=VALUE`, `-H "Authorization: ..."`)."""
+    out: list = []
+    redact_next = False
+    for item in items:
+        if redact_next and isinstance(item, str):
+            out.append("[REDACTED]")
+            redact_next = False
+            continue
+        redact_next = False
+        if isinstance(item, str):
+            m = _FLAG_RE.match(item)
+            if m and (_is_sensitive_key(m.group(1)) or m.group(1).lower() in {"h", "header"}):
+                if m.group(2) is not None:
+                    out.append(f"{item.split('=', 1)[0]}=[REDACTED]")
+                else:
+                    out.append(item)
+                    redact_next = True
+                continue
+        out.append(redact_value(key, item))
+    return out
 
 
 # Free-form SQL (safe_query) must never see these raw: they hold JSON that can
@@ -215,15 +242,41 @@ def _credential_authorizer(
     return sqlite3.SQLITE_OK
 
 
+# Command-line columns: MCP server entries keep `--api-key <value>` in args.
+_COMMAND_LINE_COLUMNS = {"args", "arguments", "argv", "command", "cmd", "commandline"}
+
+
+def is_secret_column(column: str) -> bool:
+    """True for every column the free-SQL tool must never read.
+
+    Covers credential names (api_key, accessToken, openaiKey, authHeader ...),
+    URL-type columns (userinfo), JSON/blob columns that embed keys, and
+    command-line columns. Secrets stored in arbitrary free-text columns
+    (e.g. a note or message body) are out of scope for the free-SQL tool.
+    """
+    lower = (column or "").lower()
+    if not lower:
+        return False
+    return (
+        _is_sensitive_key(column)
+        or lower in _RAW_JSON_COLUMNS
+        or lower in _COMMAND_LINE_COLUMNS
+        or lower.endswith(_URL_LIKE_SUFFIXES)
+    )
+
+
 def _free_sql_authorizer(action, arg1, arg2, dbname, source) -> int:
-    """Stricter authorizer for caller-written SQL: also null raw JSON config columns."""
+    """Authorizer for caller-written SQL.
+
+    This is the security boundary of the free-SQL tool: every SQLITE_READ of a
+    secret-classified column returns SQLITE_IGNORE, so the column reads as NULL
+    inside any expression (substr, hex, ||, unicode, json_*, CTEs). Output
+    redaction afterwards is defence in depth only.
+    """
     verdict = _credential_authorizer(action, arg1, arg2, dbname, source)
     if verdict != sqlite3.SQLITE_OK:
         return verdict
-    column = (arg2 or "").lower()
-    if action == sqlite3.SQLITE_READ and (
-        column in _RAW_JSON_COLUMNS or column.endswith(_URL_LIKE_SUFFIXES)
-    ):
+    if action == sqlite3.SQLITE_READ and is_secret_column(arg2 or ""):
         return sqlite3.SQLITE_IGNORE
     return sqlite3.SQLITE_OK
 
@@ -416,81 +469,7 @@ def safe_query(
         cursor = conn.execute(query)
         rows = cursor.fetchmany(limit)
         results = [redact_row(dict(r)) for r in rows[:limit]]
-    known = _known_secret_values(database_path)
-    if known:
-        results = [{k: _scrub_known(v, known) for k, v in row.items()} for row in results]
     return results, len(results)
-
-
-_KNOWN_SECRET_MIN = 6
-_KNOWN_SECRET_WINDOW = 8
-
-
-def _collect_secrets(key: str, value: Any, out: set) -> None:
-    if isinstance(value, str):
-        parsed = _try_json(value)
-        if parsed is not None:
-            _collect_secrets(key, parsed, out)
-            return
-        if _is_sensitive_key(key) and len(value) >= _KNOWN_SECRET_MIN:
-            out.add(value)
-        for m in _URL_USERINFO_RE.finditer(value):
-            info = value[m.end(1):m.end() - 1]
-            for part in info.split(":"):
-                if len(part) >= _KNOWN_SECRET_MIN:
-                    out.add(part)
-        for m in _SECRET_VALUE_RE.finditer(value):
-            out.add(m.group(0))
-    elif isinstance(value, dict):
-        for k, v in value.items():
-            _collect_secrets(k, v, out)
-    elif isinstance(value, list):
-        for item in value:
-            _collect_secrets(key, item, out)
-    elif isinstance(value, (bytes, bytearray)) and _is_sensitive_key(key):
-        out.add(bytes(value).hex())
-
-
-def _known_secret_values(database_path: Optional[str]) -> set:
-    """Secret values present in the database, so derived output can be scrubbed."""
-    path = get_database_path(database_path)
-    if not path:
-        return set()
-    secrets: set = set()
-    conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
-    try:
-        tables = [r[0] for r in conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")]
-        for table in tables:
-            quoted = '"' + table.replace('"', '""') + '"'
-            cur = conn.execute(f"SELECT * FROM {quoted} LIMIT 5000")
-            names = [d[0] for d in cur.description]
-            for row in cur:
-                for name, value in zip(names, row):
-                    _collect_secrets(name, value, secrets)
-    except sqlite3.Error:
-        pass
-    finally:
-        conn.close()
-    return secrets
-
-
-def _scrub_known(value: Any, known: set) -> Any:
-    """Redact any output that carries a chunk of a known secret (plain, hex or char codes)."""
-    if value is None or isinstance(value, (int, float)):
-        return value
-    text = value.hex() if isinstance(value, (bytes, bytearray)) else str(value)
-    lowered = text.lower()
-    for secret in known:
-        w = min(_KNOWN_SECRET_WINDOW, len(secret))
-        for i in range(0, len(secret) - w + 1):
-            chunk = secret[i:i + w]
-            if chunk in text or chunk.encode().hex() in lowered:
-                return "[REDACTED]"
-        codes = ",".join(str(ord(c)) for c in secret[:w])
-        if codes in text:
-            return "[REDACTED]"
-    return value
 
 
 def database_stats(database_path: Optional[str] = None) -> Dict[str, Any]:
