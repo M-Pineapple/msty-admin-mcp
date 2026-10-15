@@ -256,6 +256,7 @@ The admin server is unchanged for Studio inventory and the other 55 tools. Add t
 ### Phase 1: Foundational (6)
 - `detect_msty_installation` — app, version, DB path, ports
 - `read_msty_database` — `stats` / `tables` / read-only SQL
+  - In read-only SQL, credential columns (key, token, secret, password, auth and header names, URL, config/JSON and command-line columns) always read as NULL. Secrets typed into arbitrary free-text columns, such as a chat message or a note, are out of scope for this tool.
 - `list_configured_tools` — Toolbox MCP tools
 - `get_model_providers` — services + Studio providers (keys redacted)
 - `analyse_msty_health` — install + DB + services
@@ -379,4 +380,3 @@ Thank you for considering supporting my work! 🙏
 ## Support
 
 For issues, questions, or feature requests, visit: https://github.com/M-Pineapple/msty-admin-mcp
-[![MseeP.ai Security Assessment Badge](https://mseep.net/pr/m-pineapple-msty-admin-mcp-badge.png)](https://mseep.ai/app/m-pineapple-msty-admin-mcp)

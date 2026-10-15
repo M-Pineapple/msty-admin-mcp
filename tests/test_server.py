@@ -377,7 +377,10 @@ class TestDatabaseLayer:
             "SELECT config FROM languageModelsProviders",
             database_path=str(temp_studio_db),
         )
-        payload = json.loads(configs[0]["config"])
+        # Free SQL never sees raw JSON config; entity tools return it redacted.
+        assert configs[0]["config"] is None
+        rows = db.fetch_all("languageModelsProviders", database_path=str(temp_studio_db))
+        payload = json.loads(rows[0]["config"])
         assert payload["apiKey"] == "[REDACTED]"
         assert payload["name"] == "ok"
 
@@ -556,3 +559,318 @@ class TestCredentialAuthorizerGuard:
             except sqlite3.DatabaseError:
                 value = None
         assert value is None
+
+
+class TestFreeSqlBypassGuards:
+    """Guard tests for the 15 Oct sweep. Dummy values only."""
+
+    PLAIN = "zzDUMMYnotARealKey0000abcd"
+
+    def _db(self, tmp_path: Path) -> str:
+        p = tmp_path / "bypass.db"
+        conn = sqlite3.connect(str(p))
+        conn.execute("CREATE TABLE languageModelsProviders (id TEXT, config TEXT, accessToken TEXT, baseUrl TEXT)")
+        conn.execute(
+            "INSERT INTO languageModelsProviders VALUES ('p', ?, ?, ?)",
+            (json.dumps({"apiKey": self.PLAIN, "accessToken": self.PLAIN}), self.PLAIN, f"https://u:{self.PLAIN}@h/"),
+        )
+        conn.commit()
+        conn.close()
+        return str(p)
+
+    @pytest.mark.parametrize("query", [
+        "SELECT substr(config, 1, 200) AS v FROM languageModelsProviders",
+        "SELECT 'x' || config AS v FROM languageModelsProviders",
+        "SELECT hex(config) AS v FROM languageModelsProviders",
+        "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<80) "
+        "SELECT group_concat(unicode(substr(config,i,1))) AS v FROM languageModelsProviders, n",
+        "SELECT baseUrl AS v FROM languageModelsProviders",
+    ])
+    def test_string_functions_cannot_slice_secrets(self, tmp_path: Path, query: str):
+        rows, _ = db.safe_query(query, database_path=self._db(tmp_path))
+        self._assert_no_secret(rows)
+
+    def _assert_no_secret(self, rows):
+        text = json.dumps(rows, default=lambda b: b.hex() if isinstance(b, bytes) else str(b))
+        assert self.PLAIN not in text
+        assert self.PLAIN.encode().hex() not in text.lower()
+        codes = ",".join(str(ord(c)) for c in self.PLAIN)
+        assert codes not in text
+
+    def test_camel_case_credential_column_refused(self, tmp_path: Path):
+        with pytest.raises(ValueError):
+            db.safe_query("SELECT accessToken FROM languageModelsProviders", database_path=self._db(tmp_path))
+
+    def test_camel_case_json_keys_redacted(self, tmp_path: Path):
+        rows = db.fetch_all("languageModelsProviders", database_path=self._db(tmp_path))
+        assert self.PLAIN not in json.dumps(rows)
+
+    @pytest.mark.parametrize("table", ["sqlite_dbpage", "dbstat"])
+    def test_raw_page_tables_denied(self, tmp_path: Path, table: str):
+        path = self._db(tmp_path)
+        try:
+            rows, _ = db.safe_query(f"SELECT * FROM {table}", database_path=path)
+        except (sqlite3.DatabaseError, ValueError):
+            return
+        self._assert_no_secret(rows)
+
+    @pytest.mark.timeout(20, method="thread")
+    def test_runaway_query_is_interrupted(self, tmp_path: Path):
+        with pytest.raises(sqlite3.OperationalError):
+            db.safe_query(
+                "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n) SELECT count(*) FROM n",
+                database_path=self._db(tmp_path),
+            )
+
+    @pytest.mark.parametrize("column", ["data", "metadata", "options", "payload", "credentials"])
+    def test_generic_json_blob_columns_not_sliceable(self, tmp_path: Path, column: str):
+        p = tmp_path / "blob.db"
+        conn = sqlite3.connect(str(p))
+        conn.execute(f"CREATE TABLE someStudioTable (id TEXT, {column} TEXT)")
+        conn.execute("INSERT INTO someStudioTable VALUES ('x', ?)", (json.dumps({"apiKey": self.PLAIN}),))
+        conn.commit()
+        conn.close()
+        try:
+            rows, _ = db.safe_query(
+                "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<80) "
+                f"SELECT group_concat(unicode(substr({column},i,1))) AS v FROM someStudioTable, n",
+                database_path=str(p),
+            )
+        except ValueError:
+            return  # refused outright is also safe
+        self._assert_no_secret(rows)
+
+
+class TestRedTeamFollowUp:
+    """Guards for the red-team follow-up on the 15 Oct sweep. Dummy values only."""
+
+    PLAIN = "zzDUMMYnotARealKey0000abcd"
+
+    def _assert_no_secret(self, rows):
+        text = json.dumps(rows, default=lambda b: b.hex() if isinstance(b, bytes) else str(b))
+        assert self.PLAIN not in text
+        assert self.PLAIN.encode().hex() not in text.lower()
+        for i in range(0, len(self.PLAIN) - 8):
+            assert self.PLAIN[i:i + 8] not in text
+
+    def _url_db(self, tmp_path: Path, column: str = "baseUrl") -> str:
+        p = tmp_path / "url.db"
+        conn = sqlite3.connect(str(p))
+        conn.execute(f"CREATE TABLE providers (id TEXT, {column} TEXT)")
+        conn.execute("INSERT INTO providers VALUES ('p', ?)", (f"https://u:{self.PLAIN}@h.example/v1",))
+        conn.commit()
+        conn.close()
+        return str(p)
+
+    @pytest.mark.parametrize("expr", [
+        "substr(baseUrl, 9)", "substr(baseUrl, 11)", "substr(baseUrl, 11, 12)",
+        "ltrim(baseUrl, 'htps:/')", "upper(baseUrl)",
+    ])
+    def test_url_credentials_redacted_without_scheme(self, tmp_path: Path, expr: str):
+        rows, _ = db.safe_query(f"SELECT {expr} AS v FROM providers", database_path=self._url_db(tmp_path))
+        self._assert_no_secret(rows)
+
+    def test_url_credentials_in_unlisted_column_redacted(self, tmp_path: Path):
+        rows, _ = db.safe_query("SELECT substr(note, 9) AS v FROM providers",
+                                database_path=self._url_db(tmp_path, "note"))
+        self._assert_no_secret(rows)
+
+    def test_bare_userinfo_pattern_redacted(self):
+        assert self.PLAIN not in db._redact_secret_patterns(f"u:{self.PLAIN}@h.example/v1")
+
+    @pytest.mark.parametrize("column", ["openaiKey", "apiKeys", "authHeader", "keyValue", "providerAuth", "dbPassword"])
+    def test_wider_camel_case_names_are_secret(self, tmp_path: Path, column: str):
+        assert db._is_sensitive_key(column)
+        p = tmp_path / "camel.db"
+        conn = sqlite3.connect(str(p))
+        conn.execute(f"CREATE TABLE t (id TEXT, {column} TEXT)")
+        conn.execute("INSERT INTO t VALUES ('x', ?)", (self.PLAIN,))
+        conn.commit()
+        conn.close()
+        rows = db.fetch_all("t", database_path=str(p))
+        self._assert_no_secret(rows)
+        try:
+            rows, _ = db.safe_query(f"SELECT substr({column}, 2) AS v FROM t", database_path=str(p))
+        except ValueError:
+            return
+        self._assert_no_secret(rows)
+
+    @pytest.mark.parametrize("column", ["id", "primaryKey", "sortKey", "keyId", "promptTokens", "maxTokens", "modelId", "name"])
+    def test_identifier_columns_stay_readable(self, column: str):
+        assert not db._is_sensitive_key(column)
+
+    def test_raw_page_table_denied_by_authorizer(self):
+        for table in ("sqlite_dbpage", "dbstat"):
+            for column in ("data", "pgno", "name", "anything"):
+                assert db._credential_authorizer(sqlite3.SQLITE_READ, table, column, "main", None) == sqlite3.SQLITE_DENY
+
+    def test_raw_page_table_denied_with_benign_column_names(self, tmp_path: Path):
+        p = tmp_path / "page.db"
+        conn = sqlite3.connect(str(p))
+        conn.execute("CREATE TABLE notes (id TEXT, body TEXT)")
+        conn.execute("INSERT INTO notes VALUES ('x', ?)", (self.PLAIN,))
+        conn.commit()
+        conn.close()
+        with sqlite3.connect(str(p)) as probe:
+            try:
+                probe.execute("SELECT data FROM sqlite_dbpage LIMIT 1").fetchall()
+            except sqlite3.OperationalError:
+                pytest.skip("this SQLite build has no sqlite_dbpage")
+        with pytest.raises((sqlite3.DatabaseError, ValueError)):
+            db.safe_query("SELECT data FROM sqlite_dbpage", database_path=str(p))
+
+
+def test_streamable_http_transport_serves_mcp(monkeypatch):
+    import src.server as server
+
+    calls = {}
+    monkeypatch.setattr(server.mcp, "run", lambda *a, **k: calls.update(args=a, kwargs=k))
+    monkeypatch.setattr(sys, "argv", ["msty-admin-mcp", "--transport", "streamable-http", "--port", "8765"])
+    server.main()
+    assert calls["kwargs"].get("transport") == "streamable-http"
+    assert server.mcp.settings.host == "127.0.0.1"
+    assert server.mcp.settings.port == 8765
+    app = server.mcp.streamable_http_app()
+    paths = {getattr(r, "path", None) for r in app.routes}
+    assert server.mcp.settings.streamable_http_path in paths
+
+
+class TestAuthorizerIsTheBoundary:
+    """The free-SQL boundary is the SQLite authorizer, not output scrubbing.
+
+    The SQL-text pre-check is switched off here so only the authorizer stands
+    between the caller and the secret. Removing the IGNORE rule must fail these.
+    """
+
+    PLAIN = "zzDUMMYnotARealKey0000abcd"
+    COLUMNS = ["openaiKey", "apiKey", "accessToken", "authHeader", "clientSecret",
+               "baseUrl", "config", "args", "metadata"]
+
+    @pytest.fixture(autouse=True)
+    def _no_text_precheck(self, monkeypatch):
+        monkeypatch.setattr(db, "names_credential_column", lambda _q: False)
+
+    def _db(self, tmp_path: Path, column: str) -> str:
+        p = tmp_path / f"{column}.db"
+        conn = sqlite3.connect(str(p))
+        conn.execute(f'CREATE TABLE t (id TEXT, "{column}" TEXT)')
+        conn.execute("INSERT INTO t VALUES ('x', ?)", (self.PLAIN,))
+        conn.commit()
+        conn.close()
+        return str(p)
+
+    def _no_leak(self, rows):
+        text = json.dumps(rows, default=str)
+        joined = text.replace("|", "").replace('"', "")
+        assert self.PLAIN not in joined
+        assert self.PLAIN.encode().hex() not in text.lower()
+        for i in range(0, len(self.PLAIN) - 6, 7):
+            assert self.PLAIN[i:i + 7] not in text
+
+    @pytest.mark.parametrize("column", COLUMNS)
+    def test_seven_char_substr_reassembly_reads_null(self, tmp_path: Path, column: str):
+        q = (
+            "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+7 FROM n WHERE i<40) "
+            f'SELECT group_concat(substr("{column}", i, 7), \'|\') AS v FROM t, n'
+        )
+        rows, _ = db.safe_query(q, database_path=self._db(tmp_path, column))
+        self._no_leak(rows)
+
+    @pytest.mark.parametrize("column", COLUMNS)
+    @pytest.mark.parametrize("expr", ['hex("{c}")', '"{c}" || \'\'', 'unicode(substr("{c}", 3, 1))', 'length("{c}")'])
+    def test_column_is_null_inside_any_expression(self, tmp_path: Path, column: str, expr: str):
+        rows, _ = db.safe_query(f"SELECT {expr.format(c=column)} AS v FROM t", database_path=self._db(tmp_path, column))
+        assert rows[0]["v"] in (None, "")  # hex(NULL) is the empty string
+
+    @pytest.mark.parametrize("column", COLUMNS + ["api_key", "password", "endpoint", "command"])
+    def test_authorizer_ignores_secret_classified_reads(self, column: str):
+        assert db._free_sql_authorizer(sqlite3.SQLITE_READ, "t", column, "main", None) == sqlite3.SQLITE_IGNORE
+
+    @pytest.mark.parametrize("column", ["id", "name", "createdAt", "promptTokens", "modelId", "title"])
+    def test_ordinary_columns_stay_readable(self, column: str):
+        assert db._free_sql_authorizer(sqlite3.SQLITE_READ, "t", column, "main", None) == sqlite3.SQLITE_OK
+
+
+def test_fetch_all_redacts_cli_flag_values(tmp_path: Path):
+    secret = "zzDUMMYnotARealKey0000abcd"
+    p = tmp_path / "mcp.db"
+    conn = sqlite3.connect(str(p))
+    conn.execute("CREATE TABLE mcpServers (id TEXT, name TEXT, args TEXT)")
+    conn.execute("INSERT INTO mcpServers VALUES ('m', 'srv', ?)", (json.dumps(
+        ["-y", "some-mcp", "--api-key", secret, f"--token={secret}", "-H", f"Authorization: {secret}"]),))
+    conn.commit()
+    conn.close()
+    rows = db.fetch_all("mcpServers", database_path=str(p))
+    text = json.dumps(rows)
+    assert secret not in text
+    assert "some-mcp" in text and "--api-key" in text
+
+
+class TestGeneratedColumnsAndRawArgs:
+    PLAIN = "zzDUMMYnotARealKey0000abcd"
+
+    @pytest.fixture(autouse=True)
+    def _no_text_precheck(self, monkeypatch):
+        monkeypatch.setattr(db, "names_credential_column", lambda _q: False)
+
+    def _db(self, tmp_path: Path) -> str:
+        p = tmp_path / "gen.db"
+        conn = sqlite3.connect(str(p))
+        conn.execute(
+            "CREATE TABLE t (id TEXT, apiKey TEXT, "
+            "v TEXT GENERATED ALWAYS AS (substr(apiKey, 1, 100)) VIRTUAL, "
+            "s TEXT GENERATED ALWAYS AS ('x' || apiKey) STORED, "
+            "h TEXT GENERATED ALWAYS AS (hex(apiKey)) VIRTUAL)"
+        )
+        conn.execute("INSERT INTO t (id, apiKey) VALUES ('a', ?)", (self.PLAIN,))
+        conn.commit()
+        conn.close()
+        return str(p)
+
+    @pytest.mark.parametrize("expr", ["v", "s", "h", "substr(v, 3, 7)", "s || ''", "unicode(substr(s, 4, 1))"])
+    def test_generated_columns_read_null(self, tmp_path: Path, expr: str):
+        rows, _ = db.safe_query(f"SELECT {expr} AS out FROM t", database_path=self._db(tmp_path))
+        text = json.dumps(rows)
+        assert self.PLAIN[:7] not in text and self.PLAIN.encode().hex()[:14].upper() not in text
+        assert rows[0]["out"] in (None, "")
+
+    def test_ordinary_columns_still_readable_next_to_generated(self, tmp_path: Path):
+        rows, _ = db.safe_query("SELECT id FROM t", database_path=self._db(tmp_path))
+        assert rows == [{"id": "a"}]
+
+    @pytest.mark.parametrize("raw", [
+        "npx -y some-mcp --api-key {k}",
+        "npx some-mcp --api-key={k}",
+        "npx some-mcp --token '{k}'",
+        'npx some-mcp -H "Authorization: Bearer {k}"',
+        "npx some-mcp --unbalanced 'quote --secret {k}",
+        "npx some-mcp --model gpt {k}",
+        "npx some-mcp --key-file /x --opt sk-proj-abc123DEF456",
+        "npx some-mcp xai-AbC123dEf456GhI789",
+        "npx some-mcp ghp_ABCdef1234567890ABCdef12",
+    ])
+    def test_raw_string_args_redacted(self, tmp_path: Path, raw: str):
+        value = raw.format(k=self.PLAIN)
+        p = tmp_path / "args.db"
+        conn = sqlite3.connect(str(p))
+        conn.execute("CREATE TABLE mcpServers (id TEXT, args TEXT)")
+        conn.execute("INSERT INTO mcpServers VALUES ('m', ?)", (value,))
+        conn.commit()
+        conn.close()
+        text = json.dumps(db.fetch_all("mcpServers", database_path=str(p)))
+        for secret in (self.PLAIN, "sk-proj-abc123DEF456", "xai-AbC123dEf456GhI789", "ghp_ABCdef1234567890ABCdef12"):
+            assert secret not in text
+        assert "some-mcp" in text
+
+    def test_key_detector_spares_ordinary_arguments(self):
+        for ok in ["-y", "@modelcontextprotocol/server-filesystem", "/Users/me/projects", "some-mcp",
+                   "--port", "8080", "claude-3-5-sonnet-20241022", "localhost:11434"]:
+            assert not db._looks_like_key(ok), ok
+        for bad in ["sk-proj-abc123DEF456", self.PLAIN, "xai-AbC123dEf456GhI789", "A1b2C3d4E5f6G7h8I9j0K1l2M3n4"]:
+            assert db._looks_like_key(bad), bad
+
+    @pytest.mark.parametrize("raw", ["npx m --api-key passwordpassword", "npx m --token=passwordpassword",
+                                     "npx m --client-secret passwordpassword"])
+    def test_low_entropy_value_after_secret_flag_redacted(self, tmp_path: Path, raw: str):
+        assert not db._looks_like_key("passwordpassword")
+        assert "passwordpassword" not in db._redact_command_line(raw)

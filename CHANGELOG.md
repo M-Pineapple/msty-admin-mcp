@@ -1,5 +1,22 @@
 # Msty Admin MCP — Changelog
 
+## Unreleased
+
+### Security
+
+- Hardened the free-form SQL tool's credential handling and added a query time limit. Details are in a private advisory and will be published after release.
+- Credential values in `args` command lines (for example `--api-key …`) are redacted in entity and table reads.
+- The Cursor agent API key is passed through the environment instead of the command line.
+- Raised dependency floors to `mcp>=1.27.2,<2` and (http extra) `starlette>=1.3.1`.
+
+### Fixed
+
+- `--transport streamable-http` works on current Starlette and serves MCP (#17).
+
+### Changed
+
+- Removed the third-party MseeP badge from the README (#18).
+
 ## v6.1.4 — 2026-10-15
 
 ### Fixed
