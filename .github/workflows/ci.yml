@@ -1,0 +1,54 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-lint-test:
+    name: Build, lint, and test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            pyproject.toml
+            requirements.txt
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install build==1.6.1 ruff==0.17.2
+          python -m pip install -e ".[test]"
+
+      - name: Build
+        run: python -m build
+
+      - name: Lint
+        # E9 is syntax. F821, F822, and F823 are undefined names.
+        # Ruff 0.17.2's default ruleset reports existing typing and style
+        # findings in this tree. Those stay as they are. This step checks
+        # the rules the sources already satisfy.
+        run: ruff check src tests --select E9,F821,F822,F823
+
+      - name: Test
+        # The suite uses temporary SQLite files and stubs. It does not
+        # need a running Msty app, API keys, or outbound network access.
+        # pytest-timeout is part of the test extra. 60 seconds is well
+        # above the longest existing test.
+        run: pytest tests/ -v -ra --timeout=60
