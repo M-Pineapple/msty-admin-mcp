@@ -11,6 +11,8 @@
 
 </div>
 
+> Unofficial community project. Not affiliated with, or endorsed by, Msty. Msty is a trademark of its owner.
+
 <img src="assets/demo.gif" alt="msty-admin-mcp answering initialize and listing its tools" width="720"/>
 
 Comprehensive MCP server for administering **Msty Studio Desktop 2.9+** with **56 tools** across 9 phases: real Studio path/DB detection, entity inventory (Context Studio, Knowledge Stacks, Agent Mode, Turnstiles, …), insights analytics, Nexus bridge, Bloom evaluation, multi-backend local inference, and a handoff from a local model to the Cursor agent on this Mac.
