@@ -1396,3 +1396,11 @@ class TestToolCount:
         assert names
         assert len(names) == TOOL_COUNT
         assert missing == []
+
+
+def test_pull_source_refuses_dotless_hosts():
+    from src.install import validate_pull_source
+    for bad in ("localhost/x", "localhost:5000/x", "myhost:5000/m:1", "[::1]/m", "https://localhost:5000/m"):
+        assert validate_pull_source(bad), bad
+    for ok in ("llama3.2:3b", "library/llama3.2:3b", "user/model:tag", "hf.co/org/m", "registry.ollama.ai/library/qwen2.5:7b"):
+        assert validate_pull_source(ok) is None, ok

@@ -89,7 +89,7 @@ def validate_pull_source(name: str) -> Optional[str]:
         return None
     if "/" in text:
         host = text.split("/", 1)[0]
-        if "." in host:
+        if "." in host or ":" in host or "[" in host or host == "localhost":
             return (
                 "install_model only pulls bare Ollama names (registry.ollama.ai) "
                 f"or hf.co/ paths. Refused host {host!r}."
