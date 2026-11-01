@@ -8,6 +8,8 @@ Requires Anthropic API key for judge model.
 import os
 import json
 import subprocess
+import asyncio
+import concurrent.futures
 from dataclasses import dataclass, field, asdict
 from datetime import datetime
 from typing import Optional, List, Dict, Any
@@ -151,7 +153,10 @@ class BloomEvaluator:
         result = await self._run_bloom_pipeline(seed_config)
         
         # Process results
-        return self._process_results(result, model, behavior, task_category)
+        outcome = self._process_results(result, model, behavior, task_category)
+        self.evaluation_history.append(outcome)
+        persist_evaluation(outcome)
+        return outcome
     
     def _generate_seed_config(self, model: str, behavior: str, task_category: Optional[str],
                               total_evals: int, max_turns: int) -> Dict[str, Any]:
@@ -199,23 +204,28 @@ class BloomEvaluator:
     def _process_results(self, bloom_output: Dict[str, Any], model: str, behavior: str,
                         task_category: Optional[str]) -> EvaluationResult:
         """Process Bloom pipeline results into EvaluationResult."""
-        # Extract quality score from Bloom output
-        quality_score = bloom_output.get("overall_score", 0.5)
-        
-        # Check against threshold
-        threshold = QUALITY_THRESHOLDS.get(task_category or "general_tasks", {})
-        min_score = threshold.get("min_score", 0.5)
-        passed = quality_score >= min_score
-        
-        # Generate recommendations
         recommendations = []
-        if not passed:
-            recommendations.append(f"Score {quality_score:.2f} below minimum {min_score:.2f}")
-            if quality_score < 0.4:
-                recommendations.append("Consider using a larger model")
-        
         if bloom_output.get("error"):
+            quality_score = 0.0
+            passed = False
             recommendations.append(f"Evaluation error: {bloom_output['error']}")
+        elif "overall_score" in bloom_output:
+            try:
+                quality_score = float(bloom_output["overall_score"])
+            except (TypeError, ValueError):
+                quality_score = 0.0
+                recommendations.append("Bloom overall_score was not a number")
+            threshold = QUALITY_THRESHOLDS.get(task_category or "general_tasks", {})
+            min_score = threshold.get("min_score", 0.5)
+            passed = quality_score >= min_score
+            if not passed:
+                recommendations.append(f"Score {quality_score:.2f} below minimum {min_score:.2f}")
+                if quality_score < 0.4:
+                    recommendations.append("Consider using a larger model")
+        else:
+            quality_score = 0.0
+            passed = False
+            recommendations.append("Bloom returned no overall_score. No score was invented.")
         
         return EvaluationResult(
             behavior=behavior,
@@ -279,3 +289,118 @@ class BloomEvaluator:
                 "reason": f"Score {avg_score:.2f} meets minimum requirements",
                 "recent_scores": scores[-3:],
             }
+
+
+def history_path() -> Path:
+    override = os.environ.get("MSTY_BLOOM_HISTORY", "").strip()
+    if override:
+        return Path(override)
+    return Path.home() / ".msty-admin" / "bloom-history.json"
+
+
+def load_persisted_history(
+    model: Optional[str] = None,
+    behavior: Optional[str] = None,
+    limit: int = 10,
+) -> List[Dict[str, Any]]:
+    path = history_path()
+    if not path.is_file():
+        return []
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return []
+    items = data if isinstance(data, list) else data.get("evaluations") or []
+    results = [item for item in items if isinstance(item, dict)]
+    if model:
+        results = [r for r in results if r.get("model") == model]
+    if behavior:
+        results = [r for r in results if r.get("behavior") == behavior]
+    return results[-limit:]
+
+
+def persist_evaluation(result: EvaluationResult) -> Path:
+    path = history_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    existing = load_persisted_history(limit=10000)
+    # load_persisted_history filters; read raw
+    raw: List[Dict[str, Any]] = []
+    if path.is_file():
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(data, list):
+                raw = [item for item in data if isinstance(item, dict)]
+            elif isinstance(data, dict):
+                raw = [item for item in (data.get("evaluations") or []) if isinstance(item, dict)]
+        except (OSError, json.JSONDecodeError):
+            raw = existing
+    raw.append(result.to_dict())
+    path.write_text(json.dumps(raw, indent=2, default=str) + "\n", encoding="utf-8")
+    return path
+
+
+def _run_coro(coro):
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coro)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        return pool.submit(asyncio.run, coro).result()
+
+
+def evaluate_sync(evaluator: "BloomEvaluator", **kwargs: Any) -> EvaluationResult:
+    """Run ``evaluate`` from a sync MCP tool. Never invents a quality score."""
+    import inspect
+
+    outcome = evaluator.evaluate(**kwargs)
+    if inspect.isawaitable(outcome):
+        return _run_coro(outcome)
+    return outcome
+
+
+def handoff_from_history(model: str, task_category: str) -> Dict[str, Any]:
+    """Handoff advice from persisted Bloom history. No invented scores."""
+    history = load_persisted_history(model=model, limit=10)
+    if not history:
+        return {
+            "should_handoff": False,
+            "confidence": 0.3,
+            "reason": "No Bloom history yet. Run bloom_evaluate_model first. No score was invented.",
+            "model": model,
+            "task_category": task_category,
+        }
+    scores = [
+        r.get("quality_score")
+        for r in history
+        if r.get("task_category") == task_category and isinstance(r.get("quality_score"), (int, float))
+    ]
+    if not scores:
+        scores = [r.get("quality_score") for r in history if isinstance(r.get("quality_score"), (int, float))]
+    if not scores:
+        return {
+            "should_handoff": False,
+            "confidence": 0.3,
+            "reason": "Bloom history has no numeric scores.",
+            "model": model,
+            "task_category": task_category,
+        }
+    avg_score = sum(scores) / len(scores)
+    threshold = QUALITY_THRESHOLDS.get(task_category, {})
+    min_score = threshold.get("min_score", 0.5)
+    if avg_score < min_score:
+        return {
+            "should_handoff": True,
+            "confidence": min(1.0, 1.0 - (avg_score / min_score) if min_score else 1.0),
+            "reason": f"Average score {avg_score:.2f} below minimum {min_score:.2f}",
+            "recent_scores": scores[-3:],
+            "model": model,
+            "task_category": task_category,
+        }
+    return {
+        "should_handoff": False,
+        "confidence": min(avg_score, 1.0),
+        "reason": f"Score {avg_score:.2f} meets minimum requirements",
+        "recent_scores": scores[-3:],
+        "model": model,
+        "task_category": task_category,
+    }

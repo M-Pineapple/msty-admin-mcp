@@ -63,3 +63,10 @@ def test_dependency_floors_exclude_known_vulnerable_versions():
 
 def test_readme_has_no_third_party_badge_host():
     assert "mseep" not in (ROOT / "README.md").read_text().lower()
+
+
+def test_tool_count_matches_server_decorators():
+    from src.server import TOOL_COUNT
+
+    text = (ROOT / "src" / "server.py").read_text(encoding="utf-8")
+    assert text.count("@mcp.tool()") == TOOL_COUNT

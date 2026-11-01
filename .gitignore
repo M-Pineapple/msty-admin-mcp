@@ -70,7 +70,12 @@ pip-delete-this-directory.txt
 *.backup
 
 # Personal configuration exports (may contain absolute paths, emails, API keys)
-# Never commit these — keep local-only. Public docs use ~/ placeholders only.
+# Never commit these. Keep local-only. Public docs use ~/ placeholders only.
 msty-import/
 export/
 config-backup/
+
+# Session scratch and local worktree pointer (never public)
+.scratch/
+.git.worktree-pointer
+

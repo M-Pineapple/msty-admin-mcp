@@ -41,8 +41,13 @@ from src.services import (
     make_api_request,
     service_status_map,
 )
+from src.hardware import get_hardware_profile as _hardware_profile
+from src.hardware import catalog as hardware_catalog
+from src.install import create_variant, passthrough_allowed, pull_model
+from src import writes as studio_writes
+from src.escalation import HOOK_API_NOTE, escalation_pack
 
-TOOL_COUNT = 56
+TOOL_COUNT = 61
 
 mcp = FastMCP("msty-admin-mcp", f"v{SERVER_VERSION}")
 # FastMCP 1.x has no version= argument. Unset Server.version makes
@@ -241,10 +246,10 @@ def get_server_status() -> str:
             "available_tools": TOOL_COUNT,
             "phases": {
                 "phase_1_foundational": 6,
-                "phase_2_configuration": 4,
-                "phase_3_services": 11,
+                "phase_2_configuration": 5,
+                "phase_3_services": 14,
                 "phase_4_intelligence": 5,
-                "phase_5_calibration": 4,
+                "phase_5_calibration": 5,
                 "phase_6_bloom": 6,
                 "phase_7_studio_inventory": 15,
                 "phase_8_nexus": 4,
@@ -309,42 +314,58 @@ def sync_claude_preferences() -> str:
 
 
 @mcp.tool()
-def generate_persona(name: str, system_prompt: str, model: str) -> str:
-    """Generate a persona definition JSON suitable for Persona Studio import."""
+def generate_persona(name: str, system_prompt: str, model: str, confirm: bool = False) -> str:
+    """Build a persona JSON pack. With confirm=true, insert it when Studio is not holding the live DB."""
     persona = PersonaConfig(name=name, system_prompt=system_prompt, model=model)
-    return _json(
-        {
-            "persona": asdict(persona),
-            "created_at": datetime.now().isoformat(),
-            "import_hint": "Paste into Persona Studio or store via your preferred sync path. Live DB writes are disabled by default for safety.",
-        }
-    )
+    pack = studio_writes.persona_pack(name, system_prompt, model)
+    result = studio_writes.apply_pack(pack, confirm=confirm)
+    result["persona"] = asdict(persona)
+    result["created_at"] = datetime.now().isoformat()
+    if not confirm:
+        result["import_hint"] = (
+            "JSON pack saved under ~/.msty-admin/imports/. "
+            "Pass confirm=true to insert into Studio after a backup, or import the pack in Persona Studio."
+        )
+    return _json(result)
 
 
 @mcp.tool()
 def import_tool_config(tool_data: Dict[str, Any], confirm: bool = False) -> str:
     """
-    Validate a tool config payload for Toolbox import.
+    Validate a tool config payload. With confirm=true, insert it when Studio is not holding the live DB.
 
-    Live SQLite writes are refused unless confirm=true (still not recommended while Studio is open).
+    Always writes a JSON pack under ~/.msty-admin/imports/. Live SQLite writes need confirm=true
+    and are refused while Msty Studio is running against the live database.
     """
+    pack = studio_writes.tool_pack(tool_data)
+    result = studio_writes.apply_pack(pack, confirm=confirm)
+    result["tool_name"] = tool_data.get("name")
+    result["timestamp"] = datetime.now().isoformat()
     if not confirm:
-        return _json(
-            {
-                "status": "validated",
-                "tool_name": tool_data.get("name"),
-                "timestamp": datetime.now().isoformat(),
-                "wrote": False,
-                "note": "Pass confirm=true only if you intentionally want a write path; prefer Toolbox UI import.",
-            }
+        result["status"] = result.get("status") or "validated"
+        result["note"] = (
+            "Pass confirm=true to insert into the Studio database after a timestamped backup. "
+            "Quit Studio first, or import the JSON pack in Toolbox."
         )
-    return _json(
-        {
-            "status": "refused",
-            "reason": "Direct DB writes to the Chromium File System SQLite are unsafe while Studio may hold locks. Use Toolbox JSON import.",
-            "tool_name": tool_data.get("name"),
-        }
-    )
+    return _json(result)
+
+
+@mcp.tool()
+def import_studio_pack(pack: Dict[str, Any], confirm: bool = False) -> str:
+    """Import personas, prompts, skills, toolsets and tools.
+
+    Always saves a JSON pack under ~/.msty-admin/imports/. With confirm=true, inserts
+    into Studio SQLite after a timestamped backup, refused while Studio holds the live DB.
+    """
+    if pack.get("include_escalation_persona"):
+        merged = dict(pack)
+        personas = list(merged.get("personas") or [])
+        personas.extend(escalation_pack()["personas"])
+        merged["personas"] = personas
+        pack = merged
+    result = studio_writes.apply_pack(pack, confirm=confirm)
+    result["hook_api"] = HOOK_API_NOTE
+    return _json(result)
 
 
 # ---------------------------------------------------------------------------
@@ -376,9 +397,26 @@ def list_available_models() -> str:
 def query_local_ai_service(
     endpoint: str, method: str = "GET", data: Optional[Dict[str, Any]] = None
 ) -> str:
-    """Query Local AI (Ollama-compatible) service."""
+    """Query Local AI (Ollama-compatible) service on an allow-list of read and chat paths.
+
+    Pull and create are not allowed here. Use install_model and set_model_settings.
+    """
+    decision = passthrough_allowed(endpoint, method)
+    if not decision.get("allowed"):
+        return _json(
+            {
+                "success": False,
+                "error": decision.get("error"),
+                "endpoint": decision.get("endpoint"),
+                "method": decision.get("method"),
+                "allowed_get": decision.get("allowed_get"),
+                "allowed_post": decision.get("allowed_post"),
+            }
+        )
     ports = current_ports()
-    return _json(make_api_request(endpoint, port=ports["local_ai"], method=method, data=data))
+    return _json(
+        make_api_request(decision["endpoint"], port=ports["local_ai"], method=method, data=data)
+    )
 
 
 @mcp.tool()
@@ -399,26 +437,58 @@ def chat_with_local_model(model: str, messages: List[Dict[str, str]]) -> str:
 
 
 @mcp.tool()
-def recommend_model() -> str:
-    """Recommend a model using Studio insights when available."""
+def get_hardware_profile() -> str:
+    """Chip, CPU cores, RAM, GPU/VRAM, and Apple Silicon generation for model sizing."""
+    return _json(_hardware_profile())
+
+
+@mcp.tool()
+def recommend_model(use_case: str = "general") -> str:
+    """Recommend a local model from hardware fit, then 30-day Studio usage when it still fits."""
+    profile = _hardware_profile()
     insights = analytics.get_insights_usage(timeframe="30d")
-    if insights.get("models"):
-        top = insights["models"][0]
-        return _json(
-            {
-                "recommendation": top["model_id"],
-                "reason": f"Most used in last 30d ({top['calls']} calls, avg {top['avg_tokens_per_sec']} tok/s)",
-                "alternatives": [m["model_id"] for m in insights["models"][1:4]],
-                "source": "insightsLanguageModelUsage",
-            }
-        )
+    result = hardware_catalog.recommend(
+        profile,
+        use_case=use_case,
+        insights_models=insights.get("models") or [],
+    )
+    result["hardware"] = {
+        "chip": profile.get("chip"),
+        "ram_gb": profile.get("ram_gb"),
+        "unified_memory": profile.get("unified_memory"),
+        "apple_generation": profile.get("apple_generation"),
+        "memory_kind": profile.get("memory_kind"),
+    }
+    return _json(result)
+
+
+@mcp.tool()
+def install_model(model: str, confirm: bool = False, service: str = "local_ai") -> str:
+    """Pull a model through Local AI (Ollama-compatible /api/pull). Requires confirm=true."""
+    return _json(pull_model(model, confirm=confirm, service=service))
+
+
+@mcp.tool()
+def set_model_settings(
+    base_model: str,
+    variant_name: str,
+    temperature: Optional[float] = None,
+    top_p: Optional[float] = None,
+    num_ctx: Optional[int] = None,
+    system: Optional[str] = None,
+    confirm: bool = False,
+) -> str:
+    """Create a tuned Ollama variant via Modelfile /api/create. Requires confirm=true to apply."""
     return _json(
-        {
-            "recommendation": "llama3.2:7b",
-            "reason": "No insights yet — balanced default for Apple Silicon local use",
-            "alternatives": ["qwen2.5:7b", "mistral:7b"],
-            "source": "heuristic",
-        }
+        create_variant(
+            base_model,
+            variant_name,
+            temperature=temperature,
+            top_p=top_p,
+            num_ctx=num_ctx,
+            system=system,
+            confirm=confirm,
+        )
     )
 
 
@@ -718,11 +788,46 @@ def identify_handoff_triggers() -> str:
     if not triggers:
         triggers = [
             {
-                "pattern": "Insufficient insights — run calibration or use Studio more to populate metrics",
+                "pattern": "Insufficient insights. Run calibration or use Studio more to populate metrics",
                 "confidence": 0.4,
             }
         ]
-    return _json({"triggers": triggers})
+    return _json(
+        {
+            "triggers": triggers,
+            "escalate_tool": "escalate_if_needed",
+            "hook_api": HOOK_API_NOTE,
+        }
+    )
+
+
+@mcp.tool()
+def escalate_if_needed(
+    question: str, reason: str = "", provider: Optional[str] = None
+) -> str:
+    """Call ask_frontier. Closest equivalent to a Msty hook (Studio has none)."""
+    from src.frontier import ask_frontier as dispatch_frontier
+
+    try:
+        outcome = dispatch_frontier(question, provider=provider)
+    except Exception as exc:
+        return _json(
+            {
+                "escalated": False,
+                "error": str(exc),
+                "reason": reason,
+                "hook_api": HOOK_API_NOTE,
+            }
+        )
+    return _json(
+        {
+            "escalated": True,
+            "provider": provider or "cursor",
+            "reason": reason,
+            "answer": outcome.answer,
+            "hook_api": HOOK_API_NOTE,
+        }
+    )
 
 
 @mcp.tool()
@@ -746,41 +851,78 @@ def bloom_evaluate_model(
     total_evals: int = 3,
     max_turns: int = 2,
 ) -> str:
-    """Run Bloom behavioural evaluation on a model."""
+    """Run Bloom behavioural evaluation on a model. Never returns an invented score."""
+    import os
+
+    from src.bloom.evaluator import evaluate_sync
+
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        return _json(
+            {
+                "error": "ANTHROPIC_API_KEY is not set",
+                "requires": "ANTHROPIC_API_KEY",
+                "quality_score": None,
+                "note": "No score was invented.",
+            }
+        )
     evaluator = get_bloom_evaluator()
     if not evaluator:
-        return _json({"error": "Bloom evaluator not available", "requires": "ANTHROPIC_API_KEY"})
-    return _json(
-        {
-            "model": model,
-            "behavior": behavior,
-            "task_category": task_category,
-            "total_evals": total_evals,
-            "max_turns": max_turns,
-            "note": "Evaluator loaded — invoke full Bloom pipeline from bloom module when API key present.",
-            "timestamp": datetime.now().isoformat(),
-        }
-    )
+        return _json(
+            {
+                "error": "Bloom evaluator could not start",
+                "requires": "ANTHROPIC_API_KEY and a Bloom checkout (BLOOM_PATH or ~/bloom)",
+                "quality_score": None,
+                "note": "No score was invented.",
+            }
+        )
+    if not getattr(evaluator, "bloom_path", None):
+        return _json(
+            {
+                "error": "Bloom framework not found. Install from https://github.com/anthropics/bloom and set BLOOM_PATH.",
+                "quality_score": None,
+                "model": model,
+                "behavior": behavior,
+                "note": "No score was invented.",
+            }
+        )
+    try:
+        result = evaluate_sync(
+            evaluator,
+            model=model,
+            behavior=behavior,
+            task_category=task_category,
+            total_evals=total_evals,
+            max_turns=max_turns,
+        )
+    except Exception as exc:
+        return _json(
+            {
+                "error": str(exc),
+                "quality_score": None,
+                "model": model,
+                "behavior": behavior,
+                "note": "No score was invented.",
+            }
+        )
+    payload = result.to_dict() if hasattr(result, "to_dict") else result
+    return _json(payload)
 
 
 @mcp.tool()
 def bloom_check_handoff(model: str, task_category: str) -> str:
     """Check whether a model should hand off to Claude for a task category."""
-    return _json(
-        {
-            "should_handoff": False,
-            "confidence": 0.5,
-            "reason": "No Bloom history yet — run bloom_evaluate_model first",
-            "model": model,
-            "task_category": task_category,
-        }
-    )
+    from src.bloom.evaluator import handoff_from_history
+
+    return _json(handoff_from_history(model, task_category))
 
 
 @mcp.tool()
 def bloom_get_history(model: Optional[str] = None, behavior: Optional[str] = None) -> str:
-    """Get Bloom evaluation history."""
-    return _json({"evaluations": [], "model": model, "behavior": behavior})
+    """Get Bloom evaluation history from ~/.msty-admin/bloom-history.json."""
+    from src.bloom.evaluator import load_persisted_history
+
+    evaluations = load_persisted_history(model=model, behavior=behavior, limit=50)
+    return _json({"evaluations": evaluations, "model": model, "behavior": behavior})
 
 
 @mcp.tool()
@@ -971,12 +1113,12 @@ def get_insights_usage(model_id: Optional[str] = None, timeframe: str = "7d") ->
 
 
 @mcp.tool()
-def ask_frontier(question: str) -> str:
-    """Answer a hard question. Call once, then stop."""
-    from src.frontier import ask_cursor_agent
+def ask_frontier(question: str, provider: Optional[str] = None, fresh: bool = False) -> str:
+    """Answer a hard question via Cursor (default), Grok, or Claude. Call once, then stop."""
+    from src.frontier import ask_frontier as dispatch_frontier
 
     try:
-        outcome = ask_cursor_agent(question)
+        outcome = dispatch_frontier(question, provider=provider, fresh=fresh)
     except Exception as exc:
         return f"Frontier handoff failed: {exc}"
     return outcome.answer

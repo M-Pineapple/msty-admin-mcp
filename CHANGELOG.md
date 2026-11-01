@@ -1,5 +1,24 @@
 # Msty Admin MCP — Changelog
 
+## Unreleased
+
+Hybrid local and cloud tools on top of 6.1.5. Version number is unchanged until operator GO.
+
+### Added
+
+- `get_hardware_profile`: chip, cores, RAM, GPU/VRAM, Apple Silicon generation (sysctl and system_profiler on macOS).
+- Hardware-aware `recommend_model` with a Q4 catalog and a memory budget (about 60% of unified RAM).
+- `install_model` (`/api/pull`) and `set_model_settings` (Ollama Modelfile `/api/create`), both gated on `confirm=true`.
+- `import_studio_pack` for personas, prompts, skills, toolsets and tools.
+- `escalate_if_needed`. `ask_frontier` accepts `provider` of `cursor`, `grok`, or `claude`.
+- Bloom MCP tools call `BloomEvaluator.evaluate()` and persist history. They invent no score.
+
+### Changed
+
+- `generate_persona` and `import_tool_config` apply with `confirm=true` after a timestamped backup, and refuse while Studio holds the live DB. JSON packs always land under `~/.msty-admin/imports/`.
+- `query_local_ai_service` is allow-listed. Pull and create are no longer a generic side door.
+- README hybrid section and tool list match the 61 tools that exist.
+
 ## v6.1.5 — 2026-10-15
 
 ### Security

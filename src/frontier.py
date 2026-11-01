@@ -1,8 +1,8 @@
-"""Hand a local-model question to the Cursor agent already logged in on this Mac.
+"""Hand a local-model question to Cursor, Grok, or Claude.
 
-The local model calls ``ask_frontier``. This module runs ``cursor-agent`` in
-ask mode, keeps the Cursor chat id, and resumes it on the next call. It does
-not talk to a separate model API and it does not write the Msty Studio database.
+The local model calls ``ask_frontier``. Cursor runs ``cursor-agent`` in ask
+mode. Grok uses the xAI API. Claude uses the Anthropic API. Each provider
+keeps its own session file. This module does not write the Msty Studio database.
 """
 
 from __future__ import annotations
@@ -15,7 +15,7 @@ import subprocess
 import threading
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, List, Optional, Sequence
+from typing import Any, Callable, Dict, List, Optional, Sequence
 
 
 Runner = Callable[[Sequence[str], int], "Completed"]
@@ -349,3 +349,171 @@ def _ask_cursor_agent(
     if kept:
         save_chat_id(kept, store)
     return FrontierResult(answer=answer, chat_id=kept, resumed=previous is not None)
+
+
+PROVIDERS = ("cursor", "grok", "claude")
+HttpJson = Callable[[str, Dict[str, str], Dict[str, Any], int], Dict[str, Any]]
+
+
+def resolve_provider(provider: Optional[str] = None) -> str:
+    name = (provider or os.environ.get("MSTY_FRONTIER_PROVIDER") or "cursor").strip().lower()
+    aliases = {"xai": "grok", "x-ai": "grok", "anthropic": "claude"}
+    name = aliases.get(name, name)
+    if name not in PROVIDERS:
+        raise ValueError(f"Unknown frontier provider '{provider}'. Use cursor, grok, or claude.")
+    return name
+
+
+def provider_session_file(provider: str) -> Path:
+    if provider == "cursor":
+        return session_file()
+    return Path.home() / ".msty-admin" / f"frontier-{provider}-session.json"
+
+
+def load_messages(path: Path) -> List[dict]:
+    if not path.is_file():
+        return []
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return []
+    messages = data.get("messages")
+    if isinstance(messages, list):
+        return [m for m in messages if isinstance(m, dict)]
+    return []
+
+
+def save_messages(messages: List[dict], path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = json.dumps({"messages": messages}, indent=2) + "\n"
+    path.write_text(payload, encoding="utf-8")
+    path.chmod(stat.S_IRUSR | stat.S_IWUSR)
+
+
+def default_http_json(
+    url: str, headers: Dict[str, str], payload: Dict[str, Any], timeout: int
+) -> Dict[str, Any]:
+    from urllib import request
+    from urllib.error import HTTPError, URLError
+
+    body = json.dumps(payload).encode("utf-8")
+    req = request.Request(url, data=body, method="POST", headers=headers)
+    try:
+        with request.urlopen(req, timeout=timeout) as response:
+            raw = response.read().decode("utf-8")
+            return json.loads(raw) if raw else {}
+    except HTTPError as exc:
+        try:
+            detail = exc.read().decode("utf-8")
+        except Exception:
+            detail = str(exc)
+        raise RuntimeError(f"HTTP {exc.code}: {detail[:2000]}") from exc
+    except (URLError, TimeoutError, OSError) as exc:
+        raise RuntimeError(str(exc)) from exc
+
+
+def ask_grok(
+    question: str,
+    fresh: bool = False,
+    session_path: Optional[Path] = None,
+    http_json: Optional[HttpJson] = None,
+    timeout: Optional[int] = None,
+) -> FrontierResult:
+    key = os.environ.get("XAI_API_KEY", "").strip()
+    if not key:
+        raise RuntimeError("XAI_API_KEY is not set")
+    cleaned = question.strip()
+    if not cleaned:
+        raise ValueError("question is empty")
+    store = session_path or provider_session_file("grok")
+    previous = [] if fresh else load_messages(store)
+    messages = list(previous)
+    messages.append({"role": "user", "content": cleaned})
+    model = os.environ.get("MSTY_GROK_MODEL", "grok-3").strip() or "grok-3"
+    limit = timeout if timeout is not None else int(os.environ.get("MSTY_FRONTIER_TIMEOUT", "180"))
+    poster = http_json or default_http_json
+    data = poster(
+        "https://api.x.ai/v1/chat/completions",
+        {
+            "Authorization": f"Bearer {key}",
+            "Content-Type": "application/json",
+        },
+        {"model": model, "messages": messages, "temperature": 0.2},
+        limit,
+    )
+    try:
+        answer = data["choices"][0]["message"]["content"]
+    except (KeyError, IndexError, TypeError) as exc:
+        raise RuntimeError("Grok returned no answer text") from exc
+    if not isinstance(answer, str) or not answer.strip():
+        raise RuntimeError("Grok returned no answer text")
+    messages.append({"role": "assistant", "content": answer.strip()})
+    save_messages(messages, store)
+    return FrontierResult(answer=answer.strip(), chat_id=None, resumed=bool(previous))
+
+
+def ask_claude(
+    question: str,
+    fresh: bool = False,
+    session_path: Optional[Path] = None,
+    http_json: Optional[HttpJson] = None,
+    timeout: Optional[int] = None,
+) -> FrontierResult:
+    key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
+    if not key:
+        raise RuntimeError("ANTHROPIC_API_KEY is not set")
+    cleaned = question.strip()
+    if not cleaned:
+        raise ValueError("question is empty")
+    store = session_path or provider_session_file("claude")
+    previous = [] if fresh else load_messages(store)
+    messages = list(previous)
+    messages.append({"role": "user", "content": cleaned})
+    model = os.environ.get("MSTY_CLAUDE_MODEL", "claude-sonnet-4-5").strip() or "claude-sonnet-4-5"
+    limit = timeout if timeout is not None else int(os.environ.get("MSTY_FRONTIER_TIMEOUT", "180"))
+    poster = http_json or default_http_json
+    data = poster(
+        "https://api.anthropic.com/v1/messages",
+        {
+            "x-api-key": key,
+            "anthropic-version": "2023-06-01",
+            "content-type": "application/json",
+        },
+        {"model": model, "max_tokens": 1024, "messages": messages, "temperature": 0.2},
+        limit,
+    )
+    answer = ""
+    content = data.get("content") if isinstance(data, dict) else None
+    if isinstance(content, list):
+        parts = []
+        for block in content:
+            if isinstance(block, dict) and isinstance(block.get("text"), str):
+                parts.append(block["text"])
+        answer = "\n".join(parts).strip()
+    if not answer:
+        raise RuntimeError("Claude returned no answer text")
+    messages.append({"role": "assistant", "content": answer})
+    save_messages(messages, store)
+    return FrontierResult(answer=answer, chat_id=None, resumed=bool(previous))
+
+
+def ask_frontier(
+    question: str,
+    provider: Optional[str] = None,
+    fresh: bool = False,
+    **kwargs: Any,
+) -> FrontierResult:
+    """Dispatch to Cursor, Grok, or Claude. Cursor is the default."""
+    name = resolve_provider(provider)
+    if name == "grok":
+        allowed = {k: kwargs[k] for k in ("session_path", "http_json", "timeout") if k in kwargs}
+        return ask_grok(question, fresh=fresh, **allowed)
+    if name == "claude":
+        allowed = {k: kwargs[k] for k in ("session_path", "http_json", "timeout") if k in kwargs}
+        return ask_claude(question, fresh=fresh, **allowed)
+    allowed = {
+        k: kwargs[k]
+        for k in ("runner", "session_path", "binary", "workspace", "timeout")
+        if k in kwargs
+    }
+    return ask_cursor_agent(question, fresh=fresh, **allowed)
