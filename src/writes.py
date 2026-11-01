@@ -37,6 +37,11 @@ WRITES_ENV = "MSTY_ALLOW_STUDIO_WRITES"
 ORPHANAGE_FOLDER_ID = "__MSTY__PERSONA__ORPHANAGE__FOLDER__"
 DEFAULT_COLOR_ICON = '{"name":"tabler:user-scan"}'
 DEFAULT_EXTRAS = "{}"
+DEFAULT_PERSONA_EXTRAS = '{"attachmentsStudioDynamicSelection":null}'
+DEFAULT_ATTACHMENTS = "[]"
+DEFAULT_TAGS = "[]"
+DEFAULT_SYSTEM_PROMPT_MODE = "append"
+_VALID_PROMPT_MODES = frozenset({"append", "replace"})
 _CROCKFORD = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
 
 NO_PERSONA_FOLDER = (
@@ -89,8 +94,9 @@ def _unique_stamp() -> str:
     return now.strftime("%Y%m%dT%H%M%S") + f"{now.microsecond:06d}Z-{uuid.uuid4().hex[:8]}"
 
 
-def _iso_now() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+def _sql_now() -> str:
+    """Studio 2.9 stores createdAt as UTC 'YYYY-MM-DD HH:MM:SS'."""
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
 
 
 def new_ulid() -> str:
@@ -230,6 +236,39 @@ def _json_text(value: Any, default: Optional[str] = None) -> Optional[str]:
     return text if text else default
 
 
+def _system_prompt_blob(system: Any, mode: Optional[str] = None) -> str:
+    """Studio 2.9 stores systemPrompt as compact JSON {text, mode}.
+
+    Default mode is append. Caller mode replace is honoured. An already-wrapped
+    JSON object with a text key keeps its mode unless the caller overrides it.
+    """
+    chosen = str(mode or "").strip().lower()
+    text: Optional[str] = None
+    if isinstance(system, dict) and "text" in system:
+        text = system.get("text")
+        if not chosen:
+            chosen = str(system.get("mode") or "").strip().lower()
+    else:
+        raw = "" if system is None else str(system)
+        parsed: Any = None
+        try:
+            parsed = json.loads(raw)
+        except (TypeError, json.JSONDecodeError):
+            parsed = None
+        if isinstance(parsed, dict) and "text" in parsed:
+            text = parsed.get("text")
+            if not chosen:
+                chosen = str(parsed.get("mode") or "").strip().lower()
+        else:
+            text = raw
+    if chosen not in _VALID_PROMPT_MODES:
+        chosen = DEFAULT_SYSTEM_PROMPT_MODE
+    return json.dumps(
+        {"text": "" if text is None else str(text), "mode": chosen},
+        separators=(",", ":"),
+    )
+
+
 def _model_listed(parsed: Any, model: str) -> bool:
     if isinstance(parsed, dict):
         return model in parsed
@@ -326,55 +365,55 @@ def _insert_persona(
     folder_id = resolve_persona_folder_id(conn)
     if not folder_id:
         raise RuntimeError("persona folder missing")
-    persona_id = str(item.get("id") or new_ulid())
-    created = item.get("createdAt") or _iso_now()
+    persona_id = new_ulid()
+    version_id = new_ulid()
+    created = _sql_now()
     color = _json_text(item.get("colorIcon"), DEFAULT_COLOR_ICON)
-    extras = _json_text(item.get("extras"), DEFAULT_EXTRAS)
+    extras = DEFAULT_PERSONA_EXTRAS
+    system_blob = _system_prompt_blob(system, item.get("mode"))
     model = str(item.get("model") or "").strip()
-    partial = item.get("partialModelInfo")
-    if partial:
-        partial_text = _json_text(partial)
-    elif model and "partialModelInfo" in columns:
+    partial_text = None
+    if model and "partialModelInfo" in columns:
         provider_id = lookup_model_provider_id(conn, model)
         if provider_id:
             partial_text = json.dumps(
                 {"id": model, "providerId": provider_id}, separators=(",", ":")
             )
         else:
-            partial_text = None
             notes.append(
                 f"partialModelInfo left null for persona {name!r}: no "
                 f"languageModelConfigs.modelId or languageModelsProviders.models "
                 f"entry for {model!r}."
             )
-    else:
-        partial_text = None
     persona_row = {
         "id": persona_id,
         "name": name,
-        "systemPrompt": system,
+        "systemPrompt": system_blob,
         "folderId": folder_id,
         "colorIcon": color,
         "extras": extras,
-        "activeVersionId": persona_id,
+        "activeVersionId": version_id,
         "createdAt": created,
         "description": item.get("description"),
         "partialModelInfo": partial_text,
+        "partialSelectableAttachments": DEFAULT_ATTACHMENTS,
     }
     insert_row(conn, "personas", _row_for_columns(persona_row, columns))
     if _table_exists(conn, "personaVersions"):
         version_columns = table_columns(conn, "personaVersions")
         version_row = {
-            "id": persona_id,
+            "id": version_id,
             "personaId": persona_id,
             "versionNumber": 1,
             "name": name,
-            "systemPrompt": system,
+            "systemPrompt": system_blob,
             "colorIcon": color,
             "extras": extras,
             "partialModelInfo": partial_text,
             "description": item.get("description"),
             "createdAt": created,
+            "partialSelectableAttachments": DEFAULT_ATTACHMENTS,
+            "tags": DEFAULT_TAGS,
         }
         insert_row(
             conn, "personaVersions", _row_for_columns(version_row, version_columns)
@@ -393,8 +432,8 @@ def _insert_prompt(conn: sqlite3.Connection, item: Dict[str, Any]) -> str:
     folder_id = resolve_prompt_folder_id(conn)
     if not folder_id:
         raise RuntimeError("prompt folder missing")
-    prompt_id = str(item.get("id") or new_ulid())
-    created = item.get("createdAt") or _iso_now()
+    prompt_id = new_ulid()
+    created = _sql_now()
     extras = _json_text(item.get("extras"), DEFAULT_EXTRAS)
     prompt_row = {
         "id": prompt_id,

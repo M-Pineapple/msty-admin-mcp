@@ -40,6 +40,7 @@ Hybrid local and cloud tools on top of 6.1.5.
 
 - `set_model_settings` posts the current Ollama `/api/create` body (`model`, `from`, `parameters`, `system`) instead of the retired `name` and `modelfile` fields, which returned HTTP 400 on Ollama 0.20.3. `install_model` posts `model` on `/api/pull`. The Modelfile text stays in the preview response only.
 - Persona inserts now match Studio 2.9.12: ULID id, orphanage `folderId`, `colorIcon`, `extras`, `activeVersionId`, and a matching `personaVersions` row. Duplicate names are refused. Prompts need a `promptsLibraryFolders` row and a `promptsVersions` row. Import pack names use microseconds and a random suffix so two calls in the same second cannot collide.
+- Persona and prompt rows now match the Studio 2.9.12 gold shape: `systemPrompt` is compact JSON `{"text","mode"}` (default mode append), `createdAt` is UTC `YYYY-MM-DD HH:MM:SS`, `partialSelectableAttachments` is `[]`, persona `extras` is `{"attachmentsStudioDynamicSelection":null}`, `personaVersions` uses a separate ULID with `tags` `[]`, and `partialModelInfo` is lookup-only. Caller-supplied ids are ignored.
 
 ## v6.1.5 — 2026-10-15
 

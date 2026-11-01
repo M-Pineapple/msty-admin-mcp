@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sqlite3
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -644,6 +645,18 @@ class TestInstallAndAllowList:
 
 
 class TestWrites:
+    def test_system_prompt_blob_defaults_to_append(self):
+        blob = json.loads(writes._system_prompt_blob("Be brief."))
+        assert blob == {"text": "Be brief.", "mode": "append"}
+        wrapped = json.loads(
+            writes._system_prompt_blob('{"text":"Stay.","mode":"replace"}')
+        )
+        assert wrapped == {"text": "Stay.", "mode": "replace"}
+        override = json.loads(
+            writes._system_prompt_blob('{"text":"Stay.","mode":"replace"}', "append")
+        )
+        assert override == {"text": "Stay.", "mode": "append"}
+
     def test_preview_saves_json_without_inserting(self, admin_home, studio_fixture):
         pack = writes.persona_pack("Research", "You research.", "llama3.2:3b")
         result = writes.apply_pack(
@@ -781,29 +794,115 @@ class TestWrites:
         )
         assert result["wrote"] is True
         conn = sqlite3.connect(str(studio_fixture))
-        persona = conn.execute(
-            "SELECT id, name, folderId, colorIcon, extras, activeVersionId, "
-            "partialModelInfo, length(id) AS id_len FROM personas"
-        ).fetchone()
-        version = conn.execute(
-            "SELECT id, personaId, versionNumber, name, systemPrompt, colorIcon, extras "
-            "FROM personaVersions"
+        conn.row_factory = sqlite3.Row
+        persona = conn.execute("SELECT * FROM personas").fetchone()
+        version = conn.execute("SELECT * FROM personaVersions").fetchone()
+        conn.close()
+        sql_datetime = re.compile(r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$")
+        gold_extras = '{"attachmentsStudioDynamicSelection":null}'
+        prompt_blob = json.loads(persona["systemPrompt"])
+        assert set(prompt_blob) == {"text", "mode"}
+        assert prompt_blob["text"] == "Be brief."
+        assert prompt_blob["mode"] == "append"
+        assert persona["name"] == "Fixture Persona"
+        assert persona["folderId"] == writes.ORPHANAGE_FOLDER_ID
+        assert persona["colorIcon"] == '{"name":"tabler:user-scan"}'
+        assert persona["extras"] == gold_extras
+        assert persona["partialSelectableAttachments"] == "[]"
+        assert persona["partialModelInfo"] is None
+        assert persona["partialRTDInfo"] is None
+        assert persona["partialToolsetsInfo"] is None
+        assert persona["partialLiveContextsInfo"] is None
+        assert persona["contextShieldInfo"] is None
+        assert persona["fewShotPrompts"] is None
+        assert persona["partialKnowledgeStacksInfo"] is None
+        assert len(persona["id"]) == 26
+        assert persona["id"] != persona["activeVersionId"]
+        assert sql_datetime.match(persona["createdAt"])
+        assert version["id"] == persona["activeVersionId"]
+        assert version["personaId"] == persona["id"]
+        assert version["versionNumber"] == 1
+        assert version["name"] == "Fixture Persona"
+        assert json.loads(version["systemPrompt"]) == prompt_blob
+        assert version["colorIcon"] == persona["colorIcon"]
+        assert version["extras"] == gold_extras
+        assert version["partialSelectableAttachments"] == "[]"
+        assert version["tags"] == "[]"
+        assert version["partialModelInfo"] is None
+        assert version["partialRTDInfo"] is None
+        assert version["partialToolsetsInfo"] is None
+        assert version["partialKnowledgeStacksInfo"] is None
+        assert version["partialLiveContextsInfo"] is None
+        assert version["contextShieldInfo"] is None
+        assert version["fewShotPrompts"] is None
+        assert version["changelog"] is None
+        assert sql_datetime.match(version["createdAt"])
+        assert any("partialModelInfo left null" in note for note in result.get("notes") or [])
+
+    def test_persona_insert_ignores_caller_id_and_partial_model_info(
+        self, admin_home, studio_fixture, monkeypatch
+    ):
+        monkeypatch.setenv("MSTY_ALLOW_STUDIO_WRITES", "1")
+        pack = {
+            "personas": [
+                {
+                    "id": "CALLER-SUPPLIED-ID-NOT-ULID",
+                    "name": "Caller Id Persona",
+                    "systemPrompt": "Stay quiet.",
+                    "model": "llama3.2:3b",
+                    "partialModelInfo": {
+                        "id": "llama3.2:3b",
+                        "providerId": "FORGED-PROVIDER",
+                    },
+                }
+            ]
+        }
+        result = writes.apply_pack(
+            pack,
+            confirm=True,
+            database_path=str(studio_fixture),
+            imports_root=admin_home / "imports",
+            backup_root=admin_home / "backups",
+        )
+        assert result["wrote"] is True
+        conn = sqlite3.connect(str(studio_fixture))
+        row = conn.execute(
+            "SELECT id, partialModelInfo, activeVersionId FROM personas"
         ).fetchone()
         conn.close()
-        assert persona[1] == "Fixture Persona"
-        assert persona[2] == writes.ORPHANAGE_FOLDER_ID
-        assert persona[3] == '{"name":"tabler:user-scan"}'
-        assert persona[4] == "{}"
-        assert persona[5] == persona[0]
-        assert persona[6] is None
-        assert persona[7] == 26
-        assert version[0] == version[1] == persona[0]
-        assert version[2] == 1
-        assert version[3] == "Fixture Persona"
-        assert version[4] == "Be brief."
-        assert version[5] == persona[3]
-        assert version[6] == "{}"
+        assert row[0] != "CALLER-SUPPLIED-ID-NOT-ULID"
+        assert len(row[0]) == 26
+        assert row[1] is None
+        assert row[2] != row[0]
         assert any("partialModelInfo left null" in note for note in result.get("notes") or [])
+
+    def test_persona_mode_replace_when_caller_asks(
+        self, admin_home, studio_fixture, monkeypatch
+    ):
+        monkeypatch.setenv("MSTY_ALLOW_STUDIO_WRITES", "1")
+        pack = {
+            "personas": [
+                {
+                    "name": "Replace Mode",
+                    "systemPrompt": "You replace.",
+                    "model": "llama3.2:3b",
+                    "mode": "replace",
+                }
+            ]
+        }
+        result = writes.apply_pack(
+            pack,
+            confirm=True,
+            database_path=str(studio_fixture),
+            imports_root=admin_home / "imports",
+            backup_root=admin_home / "backups",
+        )
+        assert result["wrote"] is True
+        conn = sqlite3.connect(str(studio_fixture))
+        blob = conn.execute("SELECT systemPrompt FROM personas").fetchone()[0]
+        conn.close()
+        parsed = json.loads(blob)
+        assert parsed == {"text": "You replace.", "mode": "replace"}
 
     def test_duplicate_persona_name_is_refused(self, admin_home, studio_fixture, monkeypatch):
         monkeypatch.setenv("MSTY_ALLOW_STUDIO_WRITES", "1")
@@ -827,7 +926,10 @@ class TestWrites:
         assert "already exists" in second["error"]
         conn = sqlite3.connect(str(studio_fixture))
         assert conn.execute("SELECT COUNT(*) FROM personas").fetchone()[0] == 1
-        assert conn.execute("SELECT systemPrompt FROM personas").fetchone()[0] == "First."
+        first_blob = json.loads(
+            conn.execute("SELECT systemPrompt FROM personas").fetchone()[0]
+        )
+        assert first_blob["text"] == "First."
         conn.close()
 
     def test_prompts_without_folder_are_pack_only(
@@ -868,22 +970,58 @@ class TestWrites:
         assert result["wrote"] is True
         conn = sqlite3.connect(str(studio_fixture))
         prompt = conn.execute(
-            "SELECT id, title, text, folderId, activeVersionId FROM promptsLibraryPrompts"
+            "SELECT id, title, text, folderId, activeVersionId, createdAt, extras "
+            "FROM promptsLibraryPrompts"
         ).fetchone()
         version = conn.execute(
-            "SELECT id, promptId, versionNumber, title, text FROM promptsVersions"
+            "SELECT id, promptId, versionNumber, title, text, createdAt FROM promptsVersions"
         ).fetchone()
         search_hits = conn.execute(
             "SELECT entity FROM search WHERE entityId = ?", (prompt[0],)
         ).fetchall()
         conn.close()
+        sql_datetime = re.compile(r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$")
         assert prompt[1] == "Summarise"
         assert prompt[2] == "Summarise this."
         assert prompt[3] == "folder-1"
         assert prompt[4] == prompt[0]
+        assert sql_datetime.match(prompt[5])
+        assert prompt[6] == "{}"
+        assert len(prompt[0]) == 26
         assert version[0] == version[1] == prompt[0]
         assert version[2] == 1
+        assert sql_datetime.match(version[5])
         assert search_hits
+
+    def test_prompt_insert_ignores_caller_id(self, admin_home, studio_fixture, monkeypatch):
+        monkeypatch.setenv("MSTY_ALLOW_STUDIO_WRITES", "1")
+        conn = sqlite3.connect(str(studio_fixture))
+        conn.execute(
+            "INSERT INTO promptsLibraryFolders (id, name) VALUES ('folder-1', 'Inbox')"
+        )
+        conn.commit()
+        conn.close()
+        result = writes.apply_pack(
+            {
+                "prompts": [
+                    {
+                        "id": "CALLER-PROMPT-ID",
+                        "name": "Caller Prompt",
+                        "prompt": "Do not keep this id.",
+                    }
+                ]
+            },
+            confirm=True,
+            database_path=str(studio_fixture),
+            imports_root=admin_home / "imports",
+            backup_root=admin_home / "backups",
+        )
+        assert result["wrote"] is True
+        conn = sqlite3.connect(str(studio_fixture))
+        prompt_id = conn.execute("SELECT id FROM promptsLibraryPrompts").fetchone()[0]
+        conn.close()
+        assert prompt_id != "CALLER-PROMPT-ID"
+        assert len(prompt_id) == 26
 
     def test_partial_model_info_when_config_maps_provider(
         self, admin_home, studio_fixture, monkeypatch
@@ -900,8 +1038,13 @@ class TestWrites:
         )
         conn.commit()
         conn.close()
+        pack = writes.persona_pack("Mapped", "Hello.", "llama3.2:3b")
+        pack["personas"][0]["partialModelInfo"] = {
+            "id": "forged",
+            "providerId": "FORGED-PROVIDER",
+        }
         result = writes.apply_pack(
-            writes.persona_pack("Mapped", "Hello.", "llama3.2:3b"),
+            pack,
             confirm=True,
             database_path=str(studio_fixture),
             imports_root=admin_home / "imports",
