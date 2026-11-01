@@ -15,8 +15,32 @@ from datetime import datetime
 from typing import Optional, List, Dict, Any
 from pathlib import Path
 
+from src.safe_io import secure_write
+
 from .ollama_adapter import OllamaModelAdapter
 from .cv_behaviors import CUSTOM_BEHAVIORS, QUALITY_THRESHOLDS, HANDOFF_TRIGGERS
+
+BLOOM_ENV_KEYS = (
+    "PATH",
+    "HOME",
+    "LANG",
+    "LC_ALL",
+    "LC_CTYPE",
+    "TMPDIR",
+    "TMP",
+    "TEMP",
+    "ANTHROPIC_API_KEY",
+    "PYTHONPATH",
+    "VIRTUAL_ENV",
+    "SYSTEMROOT",
+    "WINDIR",
+)
+
+
+def bloom_child_env(source: Optional[Dict[str, str]] = None) -> Dict[str, str]:
+    """Environment for the Bloom subprocess. Drops API keys Bloom does not need."""
+    env = source if source is not None else os.environ
+    return {key: env[key] for key in BLOOM_ENV_KEYS if env.get(key)}
 
 
 @dataclass
@@ -175,31 +199,33 @@ class BloomEvaluator:
     
     async def _run_bloom_pipeline(self, config: Dict[str, Any]) -> Dict[str, Any]:
         """Execute Bloom evaluation pipeline."""
+        config_path = None
         try:
-            # Write config to temporary file
             import tempfile
-            with tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False) as f:
-                import yaml
-                yaml.dump(config, f)
-                config_path = f.name
-            
-            # Run Bloom
+            import yaml
+            with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as handle:
+                yaml.dump(config, handle)
+                config_path = handle.name
+
             result = subprocess.run(
                 ["python", str(Path(self.bloom_path) / "run.py"), config_path],
                 capture_output=True,
                 text=True,
                 timeout=300,
-                env={**os.environ, "ANTHROPIC_API_KEY": os.environ.get("ANTHROPIC_API_KEY", "")}
+                env=bloom_child_env(),
             )
-            
-            # Parse results
+
             output = result.stdout
-            # Bloom outputs JSON results
             results = json.loads(output) if output else {}
-            
             return results
         except Exception as e:
             return {"error": str(e)}
+        finally:
+            if config_path:
+                try:
+                    os.unlink(config_path)
+                except OSError:
+                    pass
     
     def _process_results(self, bloom_output: Dict[str, Any], model: str, behavior: str,
                         task_category: Optional[str]) -> EvaluationResult:
@@ -321,9 +347,7 @@ def load_persisted_history(
 
 def persist_evaluation(result: EvaluationResult) -> Path:
     path = history_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
     existing = load_persisted_history(limit=10000)
-    # load_persisted_history filters; read raw
     raw: List[Dict[str, Any]] = []
     if path.is_file():
         try:
@@ -335,7 +359,7 @@ def persist_evaluation(result: EvaluationResult) -> Path:
         except (OSError, json.JSONDecodeError):
             raw = existing
     raw.append(result.to_dict())
-    path.write_text(json.dumps(raw, indent=2, default=str) + "\n", encoding="utf-8")
+    secure_write(path, json.dumps(raw, indent=2, default=str) + "\n")
     return path
 
 

@@ -243,13 +243,23 @@ class TestPathResolution:
 class TestProcessDetection:
     def test_is_process_running_returns_bool(self):
         result = is_process_running("nonexistent_process_12345")
-        assert result is False
+        assert isinstance(result, bool)
+
+    @patch("src.paths.psutil")
+    def test_is_process_running_false_when_none_match(self, mock_psutil):
+        mock_psutil.process_iter.return_value = []
+        assert is_process_running("MstyStudio") is False
 
     @patch("src.paths.psutil")
     def test_is_process_running_finds_process(self, mock_psutil):
         mock_proc = MagicMock()
         mock_proc.info = {"name": "MstyStudio"}
         mock_psutil.process_iter.return_value = [mock_proc]
+        assert is_process_running("MstyStudio") is True
+
+    @patch("src.paths.psutil")
+    def test_is_process_running_fails_closed_on_error(self, mock_psutil):
+        mock_psutil.process_iter.side_effect = RuntimeError("denied")
         assert is_process_running("MstyStudio") is True
 
     def test_is_port_open_closed(self):

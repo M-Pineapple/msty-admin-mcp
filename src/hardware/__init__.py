@@ -7,6 +7,7 @@ and, where present, nvidia-smi.
 from __future__ import annotations
 
 import json
+import os
 import platform
 import re
 import shutil
@@ -19,6 +20,21 @@ except ImportError:  # pragma: no cover
     psutil = None  # type: ignore
 
 _APPLE_CHIP_RE = re.compile(r"\b(M[1-9]\s?(?:Pro|Max|Ultra|Extreme)?)\b", re.IGNORECASE)
+_KNOWN_BINS = {
+    "sysctl": ("/usr/sbin/sysctl", "/sbin/sysctl"),
+    "system_profiler": ("/usr/sbin/system_profiler",),
+    "nvidia-smi": ("/usr/bin/nvidia-smi", "/usr/local/bin/nvidia-smi"),
+}
+
+
+def _binary(name: str) -> str:
+    found = shutil.which(name)
+    if found:
+        return found
+    for candidate in _KNOWN_BINS.get(name, ()):
+        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            return candidate
+    return name
 
 
 def _run(argv: Sequence[str], timeout: float = 8.0) -> str:
@@ -38,7 +54,7 @@ def _run(argv: Sequence[str], timeout: float = 8.0) -> str:
 
 
 def _sysctl(name: str) -> str:
-    return _run(["sysctl", "-n", name])
+    return _run([_binary("sysctl"), "-n", name])
 
 
 def _int_or_none(value: str) -> Optional[int]:
@@ -84,8 +100,9 @@ def _detect_macos() -> Dict[str, Any]:
     logical = _int_or_none(_sysctl("hw.logicalcpu"))
     brand = _sysctl("machdep.cpu.brand_string")
     model = _sysctl("hw.model")
-    hardware = _parse_profiler_json(_run(["system_profiler", "SPHardwareDataType", "-json"]))
-    displays = _parse_profiler_json(_run(["system_profiler", "SPDisplaysDataType", "-json"]))
+    profiler = _binary("system_profiler")
+    hardware = _parse_profiler_json(_run([profiler, "SPHardwareDataType", "-json"]))
+    displays = _parse_profiler_json(_run([profiler, "SPDisplaysDataType", "-json"]))
 
     hw_items = hardware.get("SPHardwareDataType") or []
     hw0 = hw_items[0] if hw_items and isinstance(hw_items[0], dict) else {}
@@ -134,9 +151,8 @@ def _detect_macos() -> Dict[str, Any]:
 
 
 def _nvidia_vram_gb() -> Optional[float]:
-    if not shutil.which("nvidia-smi"):
-        return None
-    raw = _run(["nvidia-smi", "--query-gpu=memory.total", "--format=csv,noheader,nounits"])
+    smi = _binary("nvidia-smi")
+    raw = _run([smi, "--query-gpu=memory.total", "--format=csv,noheader,nounits"])
     if not raw:
         return None
     first = raw.splitlines()[0].strip()

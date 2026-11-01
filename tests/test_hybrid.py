@@ -3,19 +3,22 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 from src.hardware import catalog, detect_hardware
 from src.hardware.catalog import memory_budget_gb, recommend
-from src.install import create_variant, passthrough_allowed, pull_model
+from src.install import build_modelfile, create_variant, passthrough_allowed, pull_model
+from src.paths import is_process_running
 from src import writes
 from src.frontier import ask_claude, ask_frontier, ask_grok, resolve_provider
 from src.bloom.evaluator import (
     EvaluationResult,
+    bloom_child_env,
     handoff_from_history,
     load_persisted_history,
     persist_evaluation,
@@ -120,7 +123,9 @@ class TestHardware:
 
     def test_macos_sysctl_and_profiler(self, monkeypatch):
         def fake_run(argv, timeout=8.0):
-            cmd = " ".join(argv)
+            name = Path(argv[0]).name
+            rest = " ".join(argv[1:])
+            cmd = f"{name} {rest}".strip() if rest else name
             mapping = {
                 "sysctl -n hw.memsize": str(36 * 1024 ** 3),
                 "sysctl -n hw.physicalcpu": "14",
@@ -236,6 +241,53 @@ class TestInstallAndAllowList:
         assert "PARAMETER temperature 0.2" in result["modelfile"]
         assert "FROM llama3.2:3b" in result["modelfile"]
 
+    def test_create_variant_rejects_newline_in_base(self):
+        result = create_variant(
+            "llama3\nADAPTER /tmp/x.gguf\n",
+            "ok-name",
+            confirm=False,
+        )
+        assert result["wrote"] is False
+        assert result["success"] is False
+        assert "base_model" in result["error"]
+        assert "ADAPTER" not in result.get("modelfile", "")
+
+    def test_build_modelfile_rejects_injection(self):
+        with pytest.raises(ValueError, match="base_model"):
+            build_modelfile("llama3\nADAPTER /tmp/x.gguf")
+
+    def test_create_variant_refuses_existing_name(self):
+        calls = []
+
+        def fake_request(endpoint, port=None, method="GET", data=None, timeout=10):
+            calls.append(endpoint)
+            if endpoint == "/api/tags":
+                return {"success": True, "data": {"models": [{"name": "llama-tuned"}]}}
+            if endpoint == "/api/create":
+                return {"success": True, "data": {"status": "success"}}
+            return {"success": False}
+
+        result = create_variant(
+            "llama3.2:3b", "llama-tuned", confirm=True, request_fn=fake_request
+        )
+        assert result["wrote"] is False
+        assert "already exists" in result["error"]
+        assert "/api/create" not in calls
+
+    def test_query_local_ai_sends_normalised_method(self, monkeypatch):
+        captured = {}
+
+        def fake_request(endpoint, port=None, method="GET", data=None, timeout=10):
+            captured["method"] = method
+            captured["endpoint"] = endpoint
+            return {"success": True, "data": {}}
+
+        monkeypatch.setattr("src.server.make_api_request", fake_request)
+        monkeypatch.setattr("src.server.current_ports", lambda: {"local_ai": 11964})
+        json.loads(query_local_ai_service("/api/tags", "get"))
+        assert captured["method"] == "GET"
+        assert captured["endpoint"] == "/api/tags"
+
     def test_mcp_install_and_settings_preview(self, monkeypatch):
         monkeypatch.setattr(
             "src.server.pull_model",
@@ -265,7 +317,24 @@ class TestWrites:
         conn.close()
         assert count == 0
 
-    def test_confirm_inserts_persona_prompt_skill_tool(self, admin_home, studio_fixture):
+    def test_confirm_without_env_writes_nothing(self, admin_home, studio_fixture, monkeypatch):
+        monkeypatch.delenv("MSTY_ALLOW_STUDIO_WRITES", raising=False)
+        result = writes.apply_pack(
+            writes.persona_pack("Research", "You research.", "llama3.2:3b"),
+            confirm=True,
+            database_path=str(studio_fixture),
+            imports_root=admin_home / "imports",
+            backup_root=admin_home / "backups",
+        )
+        assert result["wrote"] is False
+        assert result["status"] == "refused"
+        assert "MSTY_ALLOW_STUDIO_WRITES" in result["error"]
+        conn = sqlite3.connect(str(studio_fixture))
+        assert conn.execute("SELECT COUNT(*) FROM personas").fetchone()[0] == 0
+        conn.close()
+
+    def test_tools_never_reach_db_even_with_env(self, admin_home, studio_fixture, monkeypatch):
+        monkeypatch.setenv("MSTY_ALLOW_STUDIO_WRITES", "1")
         pack = {
             "personas": [{"name": "Research", "systemPrompt": "You research.", "model": "local"}],
             "tools": [{"name": "Memory", "toolId": "memory", "config": {}}],
@@ -283,15 +352,45 @@ class TestWrites:
         assert result["status"] == "applied"
         assert result["wrote"] is True
         assert Path(result["backup_path"]).is_file()
+        mode = Path(result["backup_path"]).stat().st_mode
+        assert mode & 0o077 == 0
+        pack_mode = Path(result["pack_path"]).stat().st_mode
+        assert pack_mode & 0o077 == 0
+        assert (admin_home / "imports").stat().st_mode & 0o077 == 0
+        assert (admin_home / "backups").stat().st_mode & 0o077 == 0
         conn = sqlite3.connect(str(studio_fixture))
         assert conn.execute("SELECT name FROM personas").fetchone()[0] == "Research"
-        assert conn.execute("SELECT name FROM tools").fetchone()[0] == "Memory"
+        assert conn.execute("SELECT COUNT(*) FROM tools").fetchone()[0] == 0
         assert conn.execute("SELECT name FROM promptsLibraryPrompts").fetchone()[0] == "Summarise"
         assert conn.execute("SELECT name FROM skill_preferences").fetchone()[0] == "cite"
-        assert conn.execute("SELECT name FROM toolsets").fetchone()[0] == "Frontier only"
+        assert conn.execute("SELECT COUNT(*) FROM toolsets").fetchone()[0] == 0
+        conn.close()
+
+    def test_malicious_tool_command_is_refused(self, admin_home, studio_fixture, monkeypatch):
+        monkeypatch.setenv("MSTY_ALLOW_STUDIO_WRITES", "1")
+        result = writes.apply_pack(
+            writes.tool_pack(
+                {
+                    "name": "evil",
+                    "toolId": "evil",
+                    "config": {"command": "/bin/sh", "args": ["-c", "id"], "env": {}},
+                }
+            ),
+            confirm=True,
+            database_path=str(studio_fixture),
+            imports_root=admin_home / "imports",
+            backup_root=admin_home / "backups",
+        )
+        assert result["wrote"] is False
+        assert result["status"] == "refused"
+        assert "runs a program on your machine" in result["error"]
+        assert Path(result["pack_path"]).is_file()
+        conn = sqlite3.connect(str(studio_fixture))
+        assert conn.execute("SELECT COUNT(*) FROM tools").fetchone()[0] == 0
         conn.close()
 
     def test_refuses_when_studio_holds_live_db(self, admin_home, studio_fixture, monkeypatch):
+        monkeypatch.setenv("MSTY_ALLOW_STUDIO_WRITES", "1")
         monkeypatch.setattr(writes, "is_live_studio_database", lambda _p: True)
         monkeypatch.setattr(writes, "is_process_running", lambda _n: True)
         result = writes.apply_pack(
@@ -305,6 +404,7 @@ class TestWrites:
         assert "running" in result["error"]
 
     def test_generate_persona_and_import_tool_mcp(self, admin_home, studio_fixture, monkeypatch):
+        monkeypatch.setenv("MSTY_ALLOW_STUDIO_WRITES", "1")
         monkeypatch.setattr(writes, "resolve_database_path", lambda explicit=None: studio_fixture)
         monkeypatch.setattr(writes, "studio_holds_live_database", lambda _p: False)
         preview = json.loads(generate_persona("Tester", "Be thorough.", "llama3.2:3b"))
@@ -316,7 +416,7 @@ class TestWrites:
         tool = json.loads(
             import_tool_config({"name": "Web", "toolId": "web", "config": {}}, confirm=True)
         )
-        assert tool["wrote"] is True
+        assert tool["wrote"] is False
         pack = json.loads(
             import_studio_pack(
                 {"prompts": [{"name": "Hello", "prompt": "Hi"}]},
@@ -325,6 +425,14 @@ class TestWrites:
         )
         assert pack["wrote"] is True
         assert HOOK_API_NOTE in pack["hook_api"]
+
+    def test_is_process_running_fails_closed(self, monkeypatch):
+        monkeypatch.setattr("src.paths.psutil", None)
+        assert is_process_running("MstyStudio") is True
+        boom = MagicMock()
+        boom.process_iter.side_effect = RuntimeError("denied")
+        monkeypatch.setattr("src.paths.psutil", boom)
+        assert is_process_running("MstyStudio") is True
 
 
 class TestFrontierProviders:
@@ -409,6 +517,23 @@ class TestBloom:
         assert history[-1]["quality_score"] == 0.2
         advice = handoff_from_history("llama3.2:3b", "advisory_tasks")
         assert advice["should_handoff"] is True
+        history_file = Path(os.environ["MSTY_BLOOM_HISTORY"])
+        assert history_file.stat().st_mode & 0o077 == 0
+
+    def test_bloom_child_env_drops_other_keys(self):
+        env = bloom_child_env(
+            {
+                "PATH": "/bin",
+                "HOME": "/tmp",
+                "ANTHROPIC_API_KEY": "a",
+                "XAI_API_KEY": "x",
+                "CURSOR_API_KEY": "c",
+            }
+        )
+        assert env["ANTHROPIC_API_KEY"] == "a"
+        assert env["PATH"] == "/bin"
+        assert "XAI_API_KEY" not in env
+        assert "CURSOR_API_KEY" not in env
 
     def test_evaluate_sync_wires_real_result(self, monkeypatch, admin_home):
         monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")

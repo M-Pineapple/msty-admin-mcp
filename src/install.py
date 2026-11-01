@@ -8,6 +8,7 @@ not an unguarded side door.
 from __future__ import annotations
 
 import os
+import re
 import time
 from typing import Any, Callable, Dict, Optional
 
@@ -34,6 +35,20 @@ PASSTHROUGH_POST = frozenset(
 
 _PULL_HINT = "Use install_model with confirm=true to pull a model."
 _CREATE_HINT = "Use set_model_settings with confirm=true to create a tuned variant."
+MODEL_NAME_RE = re.compile(r"^[A-Za-z0-9._:/-]+$")
+
+
+def validate_model_name(name: str, field: str = "model") -> Optional[str]:
+    """Return an error string, or None if ``name`` is a safe model identifier."""
+    cleaned = (name or "").strip()
+    if not cleaned:
+        return f"{field} is empty"
+    if not MODEL_NAME_RE.fullmatch(cleaned):
+        return (
+            f"{field} must match {MODEL_NAME_RE.pattern} "
+            "(letters, digits, '.', '_', ':', '/', '-' only; no whitespace or control characters)"
+        )
+    return None
 
 
 def normalise_endpoint(endpoint: str) -> str:
@@ -84,30 +99,38 @@ def _port_for(service: str) -> int:
     return int(ports[key])
 
 
-def _tags(port: int, request_fn: RequestFn) -> list:
+def list_installed_models(port: int, request_fn: RequestFn) -> Optional[list]:
+    """Return installed model names, or None when Local AI cannot be listed."""
     response = request_fn("/api/tags", port=port, method="GET")
+    if response.get("success"):
+        models = (response.get("data") or {}).get("models") or []
+        names = []
+        for item in models:
+            if isinstance(item, dict):
+                names.append(item.get("name") or item.get("model"))
+        return [n for n in names if n]
+    response = request_fn("/v1/models", port=port, method="GET")
     if not response.get("success"):
-        response = request_fn("/v1/models", port=port, method="GET")
-        if not response.get("success"):
-            return []
-        data = response.get("data") or {}
-        items = data.get("data") if isinstance(data, dict) else data
-        if not isinstance(items, list):
-            return []
-        return [m.get("id") for m in items if isinstance(m, dict)]
-    models = (response.get("data") or {}).get("models") or []
-    names = []
-    for item in models:
-        if isinstance(item, dict):
-            names.append(item.get("name") or item.get("model"))
-    return [n for n in names if n]
+        return None
+    data = response.get("data") or {}
+    items = data.get("data") if isinstance(data, dict) else data
+    if not isinstance(items, list):
+        return []
+    return [m.get("id") for m in items if isinstance(m, dict) and m.get("id")]
+
+
+def _tags(port: int, request_fn: RequestFn) -> list:
+    listed = list_installed_models(port, request_fn)
+    return listed if listed is not None else []
 
 
 def _name_present(name: str, installed: list) -> bool:
     needle = name.strip()
     for item in installed:
-        text = str(item)
-        if text == needle or text.startswith(needle + ":") or needle.startswith(text):
+        text = str(item).strip()
+        if not text:
+            continue
+        if text == needle or text.startswith(needle + ":") or needle.startswith(text + ":"):
             return True
     return False
 
@@ -122,8 +145,9 @@ def pull_model(
 ) -> Dict[str, Any]:
     """POST /api/pull, then poll /api/tags until the model appears."""
     cleaned = (name or "").strip()
-    if not cleaned:
-        return {"success": False, "error": "model name is empty", "wrote": False}
+    name_error = validate_model_name(cleaned, "model")
+    if name_error:
+        return {"success": False, "error": name_error, "wrote": False}
     if service.strip().lower() in {"mlx", "llamacpp", "llama.cpp"}:
         return {
             "success": False,
@@ -185,6 +209,9 @@ def build_modelfile(
     num_ctx: Optional[int] = None,
     system: Optional[str] = None,
 ) -> str:
+    name_error = validate_model_name(base_model, "base_model")
+    if name_error:
+        raise ValueError(name_error)
     lines = [f"FROM {base_model.strip()}"]
     if temperature is not None:
         lines.append(f"PARAMETER temperature {temperature}")
@@ -213,8 +240,11 @@ def create_variant(
     """POST /api/create with a Modelfile. Prefer this over writing Studio SQLite."""
     base = (base_model or "").strip()
     variant = (variant_name or "").strip()
-    if not base or not variant:
-        return {"success": False, "error": "base_model and variant_name are required", "wrote": False}
+    name_error = validate_model_name(base, "base_model") or validate_model_name(
+        variant, "variant_name"
+    )
+    if name_error:
+        return {"success": False, "error": name_error, "wrote": False}
     modelfile = build_modelfile(base, temperature, top_p, num_ctx, system)
     if not confirm:
         return {
@@ -228,6 +258,30 @@ def create_variant(
         }
     port = _port_for(service)
     request = request_fn or make_api_request
+    installed = list_installed_models(port, request)
+    if installed is None:
+        return {
+            "success": False,
+            "wrote": False,
+            "base_model": base,
+            "variant_name": variant,
+            "error": (
+                "could not list models at /api/tags; refusing create to avoid "
+                "overwriting an existing model"
+            ),
+        }
+    if _name_present(variant, installed):
+        return {
+            "success": False,
+            "wrote": False,
+            "base_model": base,
+            "variant_name": variant,
+            "error": (
+                f"variant_name {variant!r} already exists in /api/tags. "
+                "This tool never overwrites an existing model."
+            ),
+            "installed": installed,
+        }
     limit = timeout if timeout is not None else int(os.environ.get("MSTY_CREATE_TIMEOUT", "120"))
     created = request(
         "/api/create",

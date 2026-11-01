@@ -315,7 +315,7 @@ def sync_claude_preferences() -> str:
 
 @mcp.tool()
 def generate_persona(name: str, system_prompt: str, model: str, confirm: bool = False) -> str:
-    """Build a persona JSON pack. With confirm=true, insert it when Studio is not holding the live DB."""
+    """Build a persona JSON pack. SQLite insert needs confirm=true and MSTY_ALLOW_STUDIO_WRITES=1."""
     persona = PersonaConfig(name=name, system_prompt=system_prompt, model=model)
     pack = studio_writes.persona_pack(name, system_prompt, model)
     result = studio_writes.apply_pack(pack, confirm=confirm)
@@ -324,38 +324,32 @@ def generate_persona(name: str, system_prompt: str, model: str, confirm: bool = 
     if not confirm:
         result["import_hint"] = (
             "JSON pack saved under ~/.msty-admin/imports/. "
-            "Pass confirm=true to insert into Studio after a backup, or import the pack in Persona Studio."
+            "SQLite insert needs confirm=true and MSTY_ALLOW_STUDIO_WRITES=1 in the server "
+            "environment. Or import the pack in Persona Studio."
         )
     return _json(result)
 
 
 @mcp.tool()
 def import_tool_config(tool_data: Dict[str, Any], confirm: bool = False) -> str:
-    """
-    Validate a tool config payload. With confirm=true, insert it when Studio is not holding the live DB.
+    """Save a tool config as a JSON pack for Toolbox import. Never writes the Studio database.
 
-    Always writes a JSON pack under ~/.msty-admin/imports/. Live SQLite writes need confirm=true
-    and are refused while Msty Studio is running against the live database.
+    Configs with command, args or env are flagged as running a program on your machine.
     """
     pack = studio_writes.tool_pack(tool_data)
     result = studio_writes.apply_pack(pack, confirm=confirm)
     result["tool_name"] = tool_data.get("name")
     result["timestamp"] = datetime.now().isoformat()
-    if not confirm:
-        result["status"] = result.get("status") or "validated"
-        result["note"] = (
-            "Pass confirm=true to insert into the Studio database after a timestamped backup. "
-            "Quit Studio first, or import the JSON pack in Toolbox."
-        )
     return _json(result)
 
 
 @mcp.tool()
 def import_studio_pack(pack: Dict[str, Any], confirm: bool = False) -> str:
-    """Import personas, prompts, skills, toolsets and tools.
+    """Save a Studio pack as JSON. Tools and toolsets are never inserted into SQLite.
 
-    Always saves a JSON pack under ~/.msty-admin/imports/. With confirm=true, inserts
-    into Studio SQLite after a timestamped backup, refused while Studio holds the live DB.
+    Personas, prompts and skills insert only with confirm=true and
+    MSTY_ALLOW_STUDIO_WRITES=1, after a timestamped backup, and only when Studio
+    is not holding the live database.
     """
     if pack.get("include_escalation_persona"):
         merged = dict(pack)
@@ -415,7 +409,9 @@ def query_local_ai_service(
         )
     ports = current_ports()
     return _json(
-        make_api_request(decision["endpoint"], port=ports["local_ai"], method=method, data=data)
+        make_api_request(
+            decision["endpoint"], port=ports["local_ai"], method=decision["method"], data=data
+        )
     )
 
 

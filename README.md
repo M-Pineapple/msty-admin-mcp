@@ -19,9 +19,9 @@
 
 ## What this does
 
-Msty Studio lets you run AI models on your own Mac. Msty Admin MCP connects that setup to an AI app that supports MCP, such as Claude Desktop or Cursor. That AI can size your machine, recommend and install a local model that fits, test it, write personas, prompts and tools into Studio (with `confirm=true`), and keep an eye on usage and health. A separate small server, Frontier, lets a local model in a Msty chat pass a question it cannot handle to Cursor, Grok, or Claude, and the answer comes back into the same chat.
+Msty Studio lets you run AI models on your own Mac. Msty Admin MCP connects that setup to an AI app that supports MCP, such as Claude Desktop or Cursor. That AI can size your machine, recommend and install a local model that fits, test it, write personas, prompts and skills into Studio when you allow it, and keep an eye on usage and health. Tools and toolsets are saved as a JSON pack for Toolbox import. A separate small server, Frontier, lets a local model in a Msty chat pass a question it cannot handle to Cursor, Grok, or Claude, and the answer comes back into the same chat.
 
-**What it changes, in brief.** Inventory and analytics stay read only. Confirmed writes take a timestamped backup and refuse while Msty Studio holds the live database. Keys, tokens and passwords are redacted. Details are in [Security and data access](#security-and-data-access).
+**What it changes, in brief.** Inventory and analytics stay read only. Studio SQLite writes need `confirm=true` and `MSTY_ALLOW_STUDIO_WRITES=1` in the server environment. Tools and toolsets never go into SQLite from this MCP. Keys, tokens and passwords are redacted. Details are in [Security and data access](#security-and-data-access).
 
 ## The hybrid setup
 
@@ -29,7 +29,7 @@ Msty Studio lets you run AI models on your own Mac. Msty Admin MCP connects that
 2. **Set up.** `install_model` pulls through Local AI (`/api/pull`) when you pass `confirm=true`. MLX and llama.cpp still download in Msty.
 3. **Test.** Your AI runs calibration prompts, compares models side by side on the same prompt, and can run Bloom behaviour checks such as sycophancy when Bloom and an Anthropic key are present.
 4. **Tune.** `set_model_settings` creates an Ollama Modelfile variant (`/api/create`) with temperature, top_p, context length and system prompt. Pass `confirm=true` to apply.
-5. **Configure Studio.** `generate_persona`, `import_tool_config` and `import_studio_pack` always save a JSON pack under `~/.msty-admin/imports/`. With `confirm=true` they insert into Studio after a backup, and refuse while Studio is running against the live DB.
+5. **Configure Studio.** `generate_persona`, `import_tool_config` and `import_studio_pack` always save a JSON pack under `~/.msty-admin/imports/`. Tools and toolsets stay in that pack for Toolbox import. Personas, prompts and skills insert into Studio only with `confirm=true` and `MSTY_ALLOW_STUDIO_WRITES=1`, after a backup, and they refuse while Studio holds the live DB.
 6. **Work locally.** You chat with your local model in Msty as usual.
 7. **Escalate.** When a question is too hard, the local model calls `ask_frontier` or `escalate_if_needed`. Cursor is the default. Grok (`XAI_API_KEY`) and Claude (`ANTHROPIC_API_KEY`) are also available. Msty Studio has no hook API. The escalation persona is the honest equivalent.
 
@@ -53,13 +53,13 @@ flowchart LR
     subgraph Reads["Reads your Studio"]
         I["Personas, prompts, skills, turnstiles, Knowledge Stacks, Toolbox tools"]
     end
-    subgraph Writes["Writes with confirm=true"]
-        P["Personas, prompts, skills, toolsets"]
-        V["Toolbox tool config"]
+    subgraph Writes["Writes"]
+        P["Personas, prompts, skills: confirm plus MSTY_ALLOW_STUDIO_WRITES"]
+        V["Toolbox tools and toolsets: JSON pack only"]
     end
     M --> Reads
     M --> Writes
-    Writes --> X["JSON pack always. SQLite when Studio is not holding the live DB"]
+    Writes --> X["JSON pack always. SQLite only for personas, prompts and skills"]
 ```
 
 ### A local chat asking for help
@@ -91,7 +91,7 @@ Once the server is added to your AI app, type requests as you normally would. Th
 - **"Test llama3.2 on reasoning and coding."** Runs built in calibration prompts against a local model and scores the answers. (`run_calibration_test`)
 - **"Compare qwen2.5 and mistral on this prompt."** Shows each answer and how long it took. (`compare_model_responses`)
 - **"Run a Bloom evaluation for sycophancy on this model."** Calls the real Bloom evaluator when Bloom and an Anthropic key are present. Invents no score. (`bloom_evaluate_model`)
-- **"Write a persona called Research Assistant into Studio."** Saves a JSON pack. With `confirm=true`, inserts after a backup. (`generate_persona`)
+- **"Write a persona called Research Assistant into Studio."** Saves a JSON pack. Inserts only with `confirm=true` and `MSTY_ALLOW_STUDIO_WRITES=1`. (`generate_persona`)
 - **"How could my personas be better?"** (`suggest_persona_improvements`)
 - **"Is my Msty install healthy?"** (`analyse_msty_health`)
 - **"Ask Grok why this SwiftUI view is not updating."** From a local model chat with the Frontier server. (`ask_frontier` with `provider=grok`)
@@ -156,7 +156,8 @@ Msty Studio users who want their usual AI app to help choose, test and organise 
 ## Security and data access
 
 - Inventory, analytics and free-form SQL stay **read only**. Credential columns always read as NULL. Secrets typed into free text, such as a chat message or a note, are out of scope.
-- Write tools (`generate_persona`, `import_tool_config`, `import_studio_pack`) always save a JSON pack under `~/.msty-admin/imports/`. SQLite inserts need `confirm=true`, take a timestamped backup under `~/.msty-admin/backups/`, and refuse while Msty Studio is running against the live database. Tests use fixture copies, never the live DB.
+- Write tools always save a JSON pack under `~/.msty-admin/imports/` (mode `0600`, directory `0700`). `import_tool_config` and the tools/toolsets keys of `import_studio_pack` never write the Studio database. Import that pack in Toolbox. Configs with `command`, `args` or `env` are flagged as running a program on your machine.
+- Personas, prompts and skills insert into Studio SQLite only when both `confirm=true` and the operator env `MSTY_ALLOW_STUDIO_WRITES=1` are set. The LLM cannot set that env through a tool argument. Writes take a timestamped backup under `~/.msty-admin/backups/` and refuse while Msty Studio is running against the live database. Tests use fixture copies, never the live DB.
 - `query_local_ai_service` is allow-listed (tags, version, show, chat). Pull and create go through `install_model` and `set_model_settings`, which also need `confirm=true`.
 - Calibration and Bloom history live under `~/.msty-admin/`, not in Studio.
 - Frontier needs `CURSOR_API_KEY` for Cursor, `XAI_API_KEY` for Grok, or `ANTHROPIC_API_KEY` for Claude. Keys stay in Msty's toolbox environment and never belong in this repository. In ask mode the Cursor agent does not send mail, move or delete files, or use trading tools.
@@ -377,9 +378,9 @@ The admin server still has the Studio inventory tools. Add the Frontier server a
 ### Phase 2: Configuration (5)
 - `export_tool_config`: export a tool by name/id
 - `sync_claude_preferences`: Claude to Msty delta report
-- `generate_persona`: persona JSON pack. `confirm=true` inserts after a backup
-- `import_tool_config`: validate, then insert with `confirm=true` when Studio is not holding the live DB
-- `import_studio_pack`: personas, prompts, skills, toolsets and tools
+- `generate_persona`: persona JSON pack. SQLite insert needs `confirm=true` and `MSTY_ALLOW_STUDIO_WRITES=1`
+- `import_tool_config`: JSON pack for Toolbox. Never writes the Studio database
+- `import_studio_pack`: tools and toolsets stay in the JSON pack. Personas, prompts and skills need the env gate
 
 ### Phase 3: Service Integration (14)
 - `get_service_status`, `list_available_models`, `query_local_ai_service` (allow-listed)
@@ -450,7 +451,7 @@ v6 ships unit tests for path resolution, read-only SQL guards, redaction, invent
 **A**: No. v6 targets Studio 2.9+ (works on 2.4+ layouts when the File System DB is present). Use v4.x for older process-based detection.
 
 ### Q: Does this write to the Studio database?
-**A**: Inventory and analytics stay read-only. `generate_persona`, `import_tool_config` and `import_studio_pack` always save a JSON pack under `~/.msty-admin/imports/`. They insert into Studio SQLite only with `confirm=true`, after a timestamped backup, and they refuse while Msty Studio is running against the live database. Quit Studio first, or import the JSON pack in Persona Studio or Toolbox.
+**A**: Inventory and analytics stay read-only. Write tools always save a JSON pack under `~/.msty-admin/imports/`. Tools and toolsets are import-file only. Personas, prompts and skills insert into Studio SQLite only with `confirm=true` and `MSTY_ALLOW_STUDIO_WRITES=1` in the MCP server environment, after a timestamped backup, and they refuse while Msty Studio is running against the live database. Quit Studio first, or import the JSON pack in Persona Studio or Toolbox.
 
 ### Q: What is the Nexus integration?
 **A**: [Msty Nexus](https://msty.ai/nexus/) is the local runtime/gateway. Phase 8 detects it and lists models via its OpenAI-compatible endpoint (`MSTY_NEXUS_PORT`).

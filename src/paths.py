@@ -138,18 +138,26 @@ def read_app_version(app_path: Path) -> Optional[str]:
 
 
 def is_process_running(name_substring: str) -> bool:
-    """Return True if any process name contains the substring."""
+    """Return True if any process name or exe path contains the substring.
+
+    Fails closed: missing psutil or an iteration error is treated as running,
+    so Studio writes refuse rather than proceeding on an unknown lock.
+    """
     needle = name_substring.lower()
     if psutil is None:
-        return False
+        return True
     try:
-        for proc in psutil.process_iter(["name"]):
-            pname = (proc.info.get("name") or "").lower()
-            if needle in pname:
+        for proc in psutil.process_iter(["name", "exe"]):
+            info = proc.info or {}
+            pname = info.get("name")
+            pexe = info.get("exe")
+            pname = pname.lower() if isinstance(pname, str) else ""
+            pexe = pexe.lower() if isinstance(pexe, str) else ""
+            if needle in pname or needle in pexe:
                 return True
-    except Exception:
         return False
-    return False
+    except Exception:
+        return True
 
 
 def is_port_open(host: str, port: int, timeout: float = 1.0) -> bool:
@@ -288,7 +296,7 @@ def detect_msty_installation() -> MstyInstallation:
         else:
             install.schema_note = "Using legacy msty.db path."
 
-    install.is_running = is_process_running("MstyStudio") or is_process_running("Msty")
+    install.is_running = is_process_running("MstyStudio")
     install.installed = bool(install.app_path or install.data_path or install.database_path)
     install.found = install.installed and bool(install.database_path or install.data_path)
 

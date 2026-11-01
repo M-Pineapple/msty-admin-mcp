@@ -10,12 +10,13 @@ from __future__ import annotations
 import json
 import os
 import shutil
-import stat
 import subprocess
 import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence
+
+from src.safe_io import secure_mkdir, secure_write
 
 
 Runner = Callable[[Sequence[str], int], "Completed"]
@@ -62,8 +63,7 @@ def frontier_workspace() -> Path:
             raise FileNotFoundError(f"MSTY_FRONTIER_WORKSPACE is not a directory: {path}")
         return path
     path = Path.home() / ".msty-admin" / "frontier-workspace"
-    path.mkdir(parents=True, exist_ok=True)
-    return path
+    return secure_mkdir(path)
 
 
 def load_chat_id(path: Optional[Path] = None) -> Optional[str]:
@@ -82,10 +82,8 @@ def load_chat_id(path: Optional[Path] = None) -> Optional[str]:
 
 def save_chat_id(chat_id: str, path: Optional[Path] = None) -> None:
     file = path or session_file()
-    file.parent.mkdir(parents=True, exist_ok=True)
     payload = json.dumps({"chat_id": chat_id}, indent=2) + "\n"
-    file.write_text(payload, encoding="utf-8")
-    file.chmod(stat.S_IRUSR | stat.S_IWUSR)
+    secure_write(file, payload)
 
 
 def api_key_file() -> Path:
@@ -384,10 +382,8 @@ def load_messages(path: Path) -> List[dict]:
 
 
 def save_messages(messages: List[dict], path: Path) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
     payload = json.dumps({"messages": messages}, indent=2) + "\n"
-    path.write_text(payload, encoding="utf-8")
-    path.chmod(stat.S_IRUSR | stat.S_IWUSR)
+    secure_write(path, payload)
 
 
 def default_http_json(
