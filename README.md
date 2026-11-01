@@ -15,24 +15,84 @@
 
 <img src="assets/demo.gif" alt="msty-admin-mcp answering initialize and listing its tools" width="720"/>
 
-**Ask your AI about your Msty Studio setup in plain words, and get real answers from your own install.**
+**Let the AI you already use plan, check and look after your local AI in Msty Studio, and let your local model ask for stronger help only when it needs it.**
 
 ## What this does
 
-Msty Admin MCP lets the AI you already chat with see inside Msty Studio Desktop 2.9 or later. Ask it to list your personas, Knowledge Stacks, workspaces and Toolbox tools, check that Msty and its local model services are healthy, pull usage figures from Studio insights, recommend a local model for a task, or test a model for behaviour such as sycophancy and overconfidence. A separate small server also lets a local model in a Msty chat pass a hard question to the Cursor agent on the same Mac and show the answer in that chat.
+Msty Studio lets you run AI models on your own Mac. Msty Admin MCP connects that setup to an AI app that supports MCP, such as Claude Desktop or Cursor. That AI can then see your whole Msty Studio setup and act as its adviser and administrator. It can suggest a local model, test it, write persona definitions for you, and keep an eye on usage and health. A separate small server, Frontier, lets a local model in a Msty chat pass a question it cannot handle to the Cursor agent on the same Mac, and the answer comes back into the same chat.
 
-**Data access in brief.** The Studio database is opened read only. API keys, tokens, passwords and other credential fields are redacted before anything reaches the chat. Full details are in [Security and data access](#security-and-data-access).
+**What it changes, in brief.** It reads your Studio database **read only** and never writes to it. Keys, tokens and passwords are redacted. Things it prepares for you, such as a persona, are handed back for you to import in Msty yourself. Details are in [Security and data access](#security-and-data-access).
+
+## The hybrid setup
+
+1. **Recommend.** Your AI suggests a model, based on which local models you have used most and how fast they ran. With no usage history yet it falls back to a general default.
+2. **Set up.** You download the model in Msty. This MCP does not download or install models.
+3. **Test.** Your AI runs calibration prompts, compares models side by side on the same prompt, and can run Bloom behaviour checks such as sycophancy.
+4. **Tune.** You change temperature and other settings in Msty, guided by the test results. This MCP does not write model settings.
+5. **Configure Studio.** Your AI writes persona definitions and checks tool configurations. You import them in Persona Studio or the Toolbox.
+6. **Work locally.** You chat with your local model in Msty as usual.
+7. **Escalate.** When a question is too hard, the local model calls `ask_frontier`, which asks the Cursor agent on your Mac and puts the answer in the same chat.
+
+```mermaid
+flowchart LR
+    R["Recommend"] --> S["Set up (in Msty)"]
+    S --> T["Test"]
+    T --> U["Tune (in Msty)"]
+    U --> C["Configure Studio"]
+    C --> W["Work locally"]
+    W --> E["Escalate when needed"]
+    E --> W
+```
+
+### Your AI as the architect
+
+```mermaid
+flowchart LR
+    Y["You describe the setup you want"] --> A["Your AI (Claude Desktop, Cursor or another MCP app)"]
+    A --> M["msty-admin-mcp"]
+    subgraph Reads["Reads your Studio (read only)"]
+        I["Personas, prompts, skills, turnstiles, Knowledge Stacks, Toolbox tools"]
+    end
+    subgraph Drafts["Drafts for you"]
+        P["Persona definitions"]
+        V["Checked tool configurations"]
+    end
+    M --> Reads
+    M --> Drafts
+    Drafts --> X["You import them in Msty"]
+```
+
+### A local chat asking for help
+
+```mermaid
+sequenceDiagram
+    participant You
+    participant Local as Local model in Msty
+    participant F as ask_frontier (Frontier server)
+    participant C as Cursor agent on your Mac
+    You->>Local: Ask a question
+    Local->>F: Hard question
+    F->>C: Run in ask mode
+    C-->>F: Answer
+    F-->>Local: Answer
+    Local-->>You: Answer in the same chat
+```
+
+The local model must make a real tool call, and the chat must use a toolset that contains only the Frontier server. Cursor answers with your Cursor account, so you need a Cursor user API key. See [Caveats](#caveats).
 
 ## What you can ask
 
-Once the server is added to Msty Studio, Claude Desktop or Cursor, type your request as you normally would. The AI picks the right tool.
+Once the server is added to your AI app, type requests as you normally would. The AI picks the tool.
 
-- **"Is my Msty install healthy?"** Checks the app, the database and every local model service in one go, so you know where to look when something stops working. (`analyse_msty_health`)
-- **"List my personas and Knowledge Stacks."** A full inventory of what you have built in Studio, without clicking through each screen. (`list_personas`, `list_knowledge_stacks`)
-- **"Which models have I used most, and how fast were they?"** Reads Studio's own insights data, so you see real usage rather than guesses. (`get_model_performance_metrics`)
-- **"Recommend a local model for summarising long documents."** Suggests a model from the ones you have installed. (`recommend_model`)
+- **"Which local model should I use?"** Ranks your models by recent use and speed from Studio insights. (`recommend_model`)
+- **"Which local models do I have, and are the services running?"** (`list_available_models`, `get_service_status`)
+- **"Test llama3.2 on reasoning and coding."** Runs built in calibration prompts against a local model and scores the answers. (`run_calibration_test`)
+- **"Compare qwen2.5 and mistral on this prompt."** Shows each answer and how long it took. (`compare_model_responses`)
 - **"Run a Bloom evaluation for sycophancy on this model."** Tests how a model behaves, not just what it knows. Needs an Anthropic API key. (`bloom_evaluate_model`)
-- **"Ask the Cursor agent on this Mac why this SwiftUI view is not updating."** Used from a local model chat with the Frontier server, this hands one question to Cursor and returns the answer in the same chat. (`ask_frontier`)
+- **"Write a persona called Research Assistant for my local model."** Returns persona JSON for you to paste into Persona Studio. (`generate_persona`)
+- **"How could my personas be better?"** (`suggest_persona_improvements`)
+- **"Is my Msty install healthy?"** (`analyse_msty_health`)
+- **"Ask the Cursor agent on this Mac why this SwiftUI view is not updating."** From a local model chat with the Frontier server. (`ask_frontier`)
 
 ### More example prompts
 
@@ -67,35 +127,6 @@ For a local model chat, use the one tool Frontier server (see [Hybrid local mode
 
 - "Ask the Cursor agent on this Mac why this SwiftUI view is not updating."
 
-## How it works
-
-### Everyday admin in chat
-
-```mermaid
-flowchart LR
-    U["You"] --> A["AI client (Claude, Msty or Cursor)"]
-    A --> M["msty-admin-mcp"]
-    M --> D["Studio database (read only)"]
-    M --> S["Local model services and Nexus"]
-    D --> M
-    S --> M
-    M --> A
-    A --> R["Answer in your chat"]
-```
-
-### Handing a hard question to Cursor
-
-```mermaid
-flowchart LR
-    L["Local model in a Msty chat"] --> Q{"Too hard to answer?"}
-    Q -- "No" --> N["Local model answers"]
-    Q -- "Yes" --> F["ask_frontier (Frontier server)"]
-    F --> C["Cursor agent on the same Mac"]
-    C --> B["Answer appears in the same Msty chat"]
-```
-
-The local model must make a real tool call, and the chat must use a toolset that contains only the Frontier server. See [Caveats](#caveats).
-
 ### What it can see in Studio
 
 ```mermaid
@@ -115,12 +146,14 @@ flowchart TD
 
 ## Who this is for
 
-Msty Studio users who want to look after or understand their setup by asking questions instead of clicking through screens, and anyone running local models who wants them to call on a stronger agent only when a question is beyond them, without leaving the chat. You do not need to know how MCP works beyond adding a server to your app.
+Msty Studio users who want their usual AI app to help choose, test and organise their local models, and who want local models to call on a stronger agent only when a question is beyond them, without leaving the chat. You do not need to know how MCP works beyond adding a server to your app.
 
 ## Security and data access
 
-- The Studio database is opened **read only**. Inventory and analytics never write to it. `import_tool_config` refuses live writes by default.
+- The Studio database is opened **read only**. No tool writes to it. `import_tool_config` only validates a tool configuration, and even with `confirm=true` it refuses to write. Use the Toolbox import in Msty.
+- `generate_persona` returns JSON and does not save anything. You paste it into Persona Studio.
 - Credential columns (keys, tokens, secrets, passwords, auth headers, URLs, config and command line columns) always read as NULL in read only SQL, and provider keys are redacted. Secrets typed into free text, such as a chat message or a note, are out of scope.
+- Calibration results are saved in a separate file under `~/.msty-admin/`, not in Studio.
 - The Frontier server needs a Cursor user API key, which stays in Msty's toolbox environment and never belongs in this repository. In ask mode the Cursor agent does not send mail, move or delete files, or use trading tools.
 
 **Requirements**: Python 3.10+, MCP SDK v1.0.0+, psutil 5.9.0+
