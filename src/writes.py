@@ -18,6 +18,14 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence
 
 from src.paths import detect_msty_installation, is_process_running
 from src.safe_io import secure_create, secure_mkdir, secure_write
+from src.tooling import (
+    DESCRIPTION_MAX,
+    NAME_MAX,
+    PROMPT_TEXT_MAX,
+    SYSTEM_PROMPT_MAX,
+    TITLE_MAX,
+    sanitise_color_icon,
+)
 
 TABLE_FOR_KIND = {
     "personas": "personas",
@@ -54,7 +62,11 @@ NO_PROMPT_FOLDER = (
 )
 
 
-class DuplicatePersonaName(ValueError):
+class WriteRejected(ValueError):
+    """Insert refused for a length cap or similar caller error."""
+
+
+class DuplicatePersonaName(WriteRejected):
     """Raised when a persona name is already in the Studio database."""
 
 ENV_OFF_NOTE = (
@@ -348,6 +360,46 @@ def _row_for_columns(row: Dict[str, Any], columns: Sequence[str]) -> Dict[str, A
     return {key: value for key, value in row.items() if key in columns}
 
 
+def _length_error(field: str, length: int, maximum: int) -> WriteRejected:
+    return WriteRejected(
+        f"{field} is {length} characters; maximum is {maximum}."
+    )
+
+
+def check_persona_item(item: Dict[str, Any]) -> None:
+    name = str(item.get("name") or "").strip()
+    if len(name) > NAME_MAX:
+        raise _length_error("persona name", len(name), NAME_MAX)
+    description = item.get("description")
+    if isinstance(description, str) and len(description) > DESCRIPTION_MAX:
+        raise _length_error("persona description", len(description), DESCRIPTION_MAX)
+    system = item.get("systemPrompt") or item.get("system_prompt") or ""
+    if isinstance(system, dict):
+        text = str(system.get("text") or "")
+    else:
+        raw = str(system)
+        try:
+            parsed = json.loads(raw)
+        except (TypeError, json.JSONDecodeError):
+            parsed = None
+        if isinstance(parsed, dict) and "text" in parsed:
+            text = str(parsed.get("text") or "")
+        else:
+            text = raw
+    if len(text) > SYSTEM_PROMPT_MAX:
+        raise _length_error("system prompt", len(text), SYSTEM_PROMPT_MAX)
+
+
+def check_prompt_item(item: Dict[str, Any]) -> None:
+    title = str(item.get("title") or item.get("name") or "").strip()
+    if len(title) > TITLE_MAX:
+        raise _length_error("prompt title", len(title), TITLE_MAX)
+    text = item.get("text") or item.get("prompt") or ""
+    text = str(text)
+    if len(text) > PROMPT_TEXT_MAX:
+        raise _length_error("prompt text", len(text), PROMPT_TEXT_MAX)
+
+
 def _insert_persona(
     conn: sqlite3.Connection, item: Dict[str, Any], notes: List[str]
 ) -> str:
@@ -358,6 +410,7 @@ def _insert_persona(
         raise ValueError("persona needs name")
     if not system:
         raise ValueError("persona needs systemPrompt")
+    check_persona_item(item)
     if conn.execute("SELECT 1 FROM personas WHERE name = ? LIMIT 1", (name,)).fetchone():
         raise DuplicatePersonaName(
             f"persona name {name!r} already exists. Choose a different name."
@@ -368,7 +421,7 @@ def _insert_persona(
     persona_id = new_ulid()
     version_id = new_ulid()
     created = _sql_now()
-    color = _json_text(item.get("colorIcon"), DEFAULT_COLOR_ICON)
+    color = sanitise_color_icon(item.get("colorIcon"))
     extras = DEFAULT_PERSONA_EXTRAS
     system_blob = _system_prompt_blob(system, item.get("mode"))
     model = str(item.get("model") or "").strip()
@@ -433,6 +486,7 @@ def _insert_prompt(conn: sqlite3.Connection, item: Dict[str, Any]) -> str:
         raise ValueError("prompt needs title")
     if not text:
         raise ValueError("prompt needs text")
+    check_prompt_item(item)
     folder_id = resolve_prompt_folder_id(conn)
     if not folder_id:
         raise RuntimeError("prompt folder missing")
@@ -496,6 +550,19 @@ def apply_pack(
         unique = sorted(set(k.lower() for k in launch_hits))
         launch_risk = [f"{key}: {LAUNCH_FLAG}" for key in unique]
 
+    try:
+        for item in pack.get("personas") or []:
+            if isinstance(item, dict):
+                check_persona_item(item)
+        for item in pack.get("prompts") or []:
+            if isinstance(item, dict):
+                check_prompt_item(item)
+    except WriteRejected as exc:
+        return {
+            "status": "refused",
+            "wrote": False,
+            "error": str(exc),
+        }
     saved = save_import_pack(pack, dest_dir=imports_root)
     counts = {
         kind: len(pack.get(kind) or [])
@@ -592,7 +659,7 @@ def apply_pack(
             if ids:
                 applied[kind] = ids
         conn.execute("COMMIT")
-    except DuplicatePersonaName as exc:
+    except WriteRejected as exc:
         try:
             conn.execute("ROLLBACK")
         except sqlite3.Error:

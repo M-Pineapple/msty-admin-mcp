@@ -1,9 +1,9 @@
 """
-Msty Admin MCP Server v6.2.0
+Msty Admin MCP Server v6.2.1
 ============================
 
 Administer Msty Studio Desktop 2.9+ with real path/DB detection, entity inventory,
-insights analytics, workflow export, and Nexus bridge — plus Bloom/calibration.
+insights analytics, workflow export, and Nexus bridge, plus Bloom/calibration.
 
 Author: M-Pineapple 🍍
 """
@@ -18,7 +18,7 @@ import uuid
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Annotated, Any, Dict, List, Optional
 
 try:
     from mcp.server.fastmcp import FastMCP
@@ -27,6 +27,7 @@ except ImportError:
     sys.exit(1)
 
 from src import analytics, db, inventory, nexus
+from src.tooling import F, ann
 from src.version import __version__ as SERVER_VERSION
 from src.paths import (
     MstyInstallation,
@@ -47,7 +48,10 @@ from src.install import create_variant, passthrough_allowed, pull_model
 from src import writes as studio_writes
 from src.escalation import HOOK_API_NOTE, escalation_pack
 
-TOOL_COUNT = 61
+TOOL_COUNT = 54
+CHAT_BACKENDS = ("local_ai", "mlx", "llamacpp")
+MODEL_BACKENDS = ("all", "local_ai", "mlx", "llamacpp", "vibe", "nexus")
+STATUS_SCOPES = ("all", "server", "install", "services")
 
 mcp = FastMCP("msty-admin-mcp", f"v{SERVER_VERSION}")
 # FastMCP 1.x has no version= argument. Unset Server.version makes
@@ -112,23 +116,115 @@ def get_bloom_evaluator():
 # ---------------------------------------------------------------------------
 
 
-@mcp.tool()
-def detect_msty_installation() -> str:
-    """Detect Msty Studio installation, version, database, and service ports."""
+def _server_status_payload() -> Dict[str, Any]:
+    return {
+        "status": "running",
+        "server": {"name": "msty-admin-mcp", "version": SERVER_VERSION},
+        "version": SERVER_VERSION,
+        "timestamp": datetime.now().isoformat(),
+        "tools_available": TOOL_COUNT,
+        "available_tools": TOOL_COUNT,
+        "phases": {
+            "phase_1_foundational": 5,
+            "phase_2_configuration": 5,
+            "phase_3_services": 9,
+            "phase_4_intelligence": 5,
+            "phase_5_calibration": 5,
+            "phase_6_bloom": 6,
+            "phase_7_studio_inventory": 15,
+            "phase_8_nexus": 3,
+            "phase_9_frontier": 1,
+        },
+        "studio_target": "2.9+",
+    }
+
+
+def _install_health_payload() -> Dict[str, Any]:
+    install = _detect_install()
+    services = service_status_map()
+    recommendations: List[str] = []
+    db_status: Dict[str, Any] = {"healthy": False}
+    try:
+        stats = db.database_stats()
+        db_status = {"healthy": "error" not in stats, **stats}
+    except Exception as exc:
+        db_status = {"healthy": False, "error": str(exc)}
+        recommendations.append(f"Database unreadable: {exc}")
+    if not install.found:
+        recommendations.append(
+            "Studio data/database not detected. Ensure MstyStudio.app has been launched once."
+        )
+    if install.version and install.version not in ("unknown",) and install.version < "2.5.0":
+        recommendations.append(
+            f"Studio {install.version} is older than Knowledge Stacks Next Gen (2.5). Consider upgrading."
+        )
+    if not any(s.get("available") for k, s in services.items() if k != "nexus"):
+        recommendations.append(
+            "No local inference services are listening. Start Local AI / MLX / Llama.cpp in Studio settings."
+        )
+    if not recommendations:
+        recommendations.append("Installation looks healthy.")
+    overall = "healthy"
+    if not install.found or not db_status.get("healthy"):
+        overall = "degraded"
+    if not install.installed:
+        overall = "missing"
+    tool_count = 0
+    try:
+        tool_count = db.count_rows("tools") if db.table_exists("tools") else 0
+    except Exception:
+        pass
+    report = MstyHealthReport(
+        overall_status=overall,
+        database_status=db_status,
+        recommendations=recommendations,
+        msty_version=install.version,
+        installed_tools_count=tool_count,
+        available_models=sum(
+            len(list_models_from_port(p))
+            for p in current_ports().values()
+            if isinstance(p, int)
+        ),
+        service_status=services,
+        database_healthy=bool(db_status.get("healthy")),
+    )
+    return asdict(report)
+
+
+@mcp.tool(
+    **ann("Get Msty installation", read_only=True),
+    description=(
+        "Locate the Msty Studio app, version, database path and service ports on this machine. "
+        "Use this before other Studio tools when you need paths or to confirm Studio is installed. "
+        "Read-only. Returns a JSON object with installed, version, database and ports."
+    ),
+)
+def get_msty_installation() -> str:
     install = _detect_install()
     payload = install.to_dict()
     payload["paths"] = {k: str(v) for k, v in get_msty_paths().items()}
     return _json(payload)
 
 
-@mcp.tool()
-def read_msty_database(query: str = "stats", limit: int = 100) -> str:
-    """
-    Query the Studio workspace database.
-
-    Use query='stats' for overview, query='tables' for table list, or a
-    read-only SQL SELECT/WITH/PRAGMA statement.
-    """
+@mcp.tool(
+    **ann("Read Studio database", read_only=True),
+    description=(
+        "Run a read-only query against the Studio SQLite database. "
+        "Use query=stats or query=tables for overviews, or a SELECT/WITH/PRAGMA statement. "
+        "Do not use this to change data. Credential columns read as NULL. "
+        "Returns JSON with query_type and either stats, a table list, or rows."
+    ),
+)
+def read_msty_database(
+    query: Annotated[
+        str,
+        F("stats, tables, or a read-only SQL SELECT/WITH/PRAGMA statement. Default stats."),
+    ] = "stats",
+    limit: Annotated[
+        int,
+        F("Maximum SQL rows to return. Integer from 1 to 500. Default 100."),
+    ] = 100,
+) -> str:
     try:
         if query in ("stats", "stat"):
             return _json({"query_type": "stats", **db.database_stats()})
@@ -141,9 +237,15 @@ def read_msty_database(query: str = "stats", limit: int = 100) -> str:
         return _json({"error": str(exc), "query_type": query})
 
 
-@mcp.tool()
+@mcp.tool(
+    **ann("List configured Toolbox tools", read_only=True),
+    description=(
+        "List MCP and Toolbox tools stored in Studio. "
+        "Use this for Toolbox contents. Use list_studio_catalogue for entity counts across Studio. "
+        "Read-only. Returns JSON with tools and tool_count."
+    ),
+)
 def list_configured_tools() -> str:
-    """List MCP/Toolbox tools configured in Msty Studio."""
     result = inventory.list_entities("tools", limit=500)
     if "error" in result and "items" not in result:
         return _json(result)
@@ -157,9 +259,15 @@ def list_configured_tools() -> str:
     )
 
 
-@mcp.tool()
+@mcp.tool(
+    **ann("Get model providers", read_only=True),
+    description=(
+        "List local inference backends and Studio-configured remote providers, with keys redacted. "
+        "Use list_models when you only need model names. Use get_status with scope=services for port health only. "
+        "Read-only. Returns JSON with services, local_models and remote_providers."
+    ),
+)
 def get_model_providers() -> str:
-    """List local service backends and Studio-configured providers (keys redacted)."""
     ports = current_ports()
     local_models = {
         "local_ai": list_models_from_port(ports["local_ai"]),
@@ -178,86 +286,39 @@ def get_model_providers() -> str:
     )
 
 
-@mcp.tool()
-def analyse_msty_health() -> str:
-    """Comprehensive health report for Studio install, DB, and services."""
-    install = _detect_install()
+@mcp.tool(
+    **ann("Get status", read_only=True),
+    description=(
+        "Report MCP server status, Studio install health, and local service ports in one tool. "
+        "Use scope=server for this MCP process, scope=install for the Studio app and database, "
+        "scope=services for Local AI/MLX/Llama.cpp/Vibe/Nexus ports, or scope=all for every section. "
+        "Read-only. Returns JSON for the chosen scope."
+    ),
+)
+def get_status(
+    scope: Annotated[
+        str,
+        F("Which view to return. One of all, server, install, services. Default all."),
+    ] = "all",
+) -> str:
+    cleaned = (scope or "all").strip().lower()
+    if cleaned not in STATUS_SCOPES:
+        return _json(
+            {
+                "error": f"Unknown scope {scope!r}. Use all, server, install or services.",
+                "allowed": list(STATUS_SCOPES),
+            }
+        )
+    server = _server_status_payload()
     services = service_status_map()
-    recommendations: List[str] = []
-
-    db_status: Dict[str, Any] = {"healthy": False}
-    try:
-        stats = db.database_stats()
-        db_status = {"healthy": "error" not in stats, **stats}
-    except Exception as exc:
-        db_status = {"healthy": False, "error": str(exc)}
-        recommendations.append(f"Database unreadable: {exc}")
-
-    if not install.found:
-        recommendations.append(
-            "Studio data/database not detected. Ensure MstyStudio.app has been launched once."
-        )
-    if install.version and install.version not in ("unknown",) and install.version < "2.5.0":
-        recommendations.append(
-            f"Studio {install.version} is older than Knowledge Stacks Next Gen (2.5). Consider upgrading."
-        )
-    if not any(s.get("available") for k, s in services.items() if k != "nexus"):
-        recommendations.append(
-            "No local inference services are listening. Start Local AI / MLX / Llama.cpp in Studio settings."
-        )
-    if not recommendations:
-        recommendations.append("Installation looks healthy.")
-
-    overall = "healthy"
-    if not install.found or not db_status.get("healthy"):
-        overall = "degraded"
-    if not install.installed:
-        overall = "missing"
-
-    tool_count = 0
-    try:
-        tool_count = db.count_rows("tools") if db.table_exists("tools") else 0
-    except Exception:
-        pass
-
-    report = MstyHealthReport(
-        overall_status=overall,
-        database_status=db_status,
-        recommendations=recommendations,
-        msty_version=install.version,
-        installed_tools_count=tool_count,
-        available_models=sum(len(list_models_from_port(p)) for p in current_ports().values() if isinstance(p, int)),
-        service_status=services,
-        database_healthy=bool(db_status.get("healthy")),
-    )
-    return _json(asdict(report))
-
-
-@mcp.tool()
-def get_server_status() -> str:
-    """MCP server status and tool inventory summary."""
-    return _json(
-        {
-            "status": "running",
-            "server": {"name": "msty-admin-mcp", "version": SERVER_VERSION},
-            "version": SERVER_VERSION,
-            "timestamp": datetime.now().isoformat(),
-            "tools_available": TOOL_COUNT,
-            "available_tools": TOOL_COUNT,
-            "phases": {
-                "phase_1_foundational": 6,
-                "phase_2_configuration": 5,
-                "phase_3_services": 14,
-                "phase_4_intelligence": 5,
-                "phase_5_calibration": 5,
-                "phase_6_bloom": 6,
-                "phase_7_studio_inventory": 15,
-                "phase_8_nexus": 4,
-                "phase_9_frontier": 1,
-            },
-            "studio_target": "2.9+",
-        }
-    )
+    install = _install_health_payload()
+    if cleaned == "server":
+        return _json(server)
+    if cleaned == "services":
+        return _json(services)
+    if cleaned == "install":
+        return _json(install)
+    return _json({"server": server, "install": install, "services": services})
 
 
 # ---------------------------------------------------------------------------
@@ -265,9 +326,20 @@ def get_server_status() -> str:
 # ---------------------------------------------------------------------------
 
 
-@mcp.tool()
-def export_tool_config(tool_name: str) -> str:
-    """Export a Studio tool configuration by name or toolId."""
+@mcp.tool(
+    **ann("Export tool config", read_only=True),
+    description=(
+        "Export one Studio Toolbox tool configuration by name, toolId or id. "
+        "Use this to copy a config. Use import_tool_config to save a pack for Toolbox import. "
+        "Read-only. Returns JSON with the tool config, or an error and available names."
+    ),
+)
+def export_tool_config(
+    tool_name: Annotated[
+        str,
+        F("Toolbox tool name, toolId or id to export. Non-empty string."),
+    ],
+) -> str:
     tools = inventory.list_entities("tools", limit=500).get("items", [])
     match = next(
         (
@@ -289,9 +361,15 @@ def export_tool_config(tool_name: str) -> str:
     )
 
 
-@mcp.tool()
+@mcp.tool(
+    **ann("Sync Claude preferences", read_only=True),
+    description=(
+        "Compare Claude Desktop MCP server names with tools already in Msty Toolbox. "
+        "Use this for a delta report. It does not write to Studio. Import missing tools with import_tool_config. "
+        "Read-only. Returns JSON with claude_servers, msty_tools and a note that writes stay user-confirmed."
+    ),
+)
 def sync_claude_preferences() -> str:
-    """Report Claude Desktop MCP sync candidates (read-only inventory)."""
     claude_cfg = Path.home() / "Library" / "Application Support" / "Claude" / "claude_desktop_config.json"
     msty_tools = inventory.list_entities("tools", limit=500)
     claude_servers = {}
@@ -313,9 +391,31 @@ def sync_claude_preferences() -> str:
     )
 
 
-@mcp.tool()
-def generate_persona(name: str, system_prompt: str, model: str, confirm: bool = False) -> str:
-    """Build a persona JSON pack. SQLite insert needs confirm=true and MSTY_ALLOW_STUDIO_WRITES=1."""
+@mcp.tool(
+    **ann("Generate persona", read_only=False, idempotent=False),
+    description=(
+        "Build a persona JSON pack and, when gated, insert it into Studio SQLite. "
+        "Use this to create a persona. Use import_studio_pack for a full pack. "
+        "Always writes a pack under ~/.msty-admin/imports/. SQLite insert needs confirm=true, "
+        "MSTY_ALLOW_STUDIO_WRITES=1 in the server environment, and Studio must be closed. "
+        "Name max 100 characters, system prompt max 20000. Returns JSON with pack_path and wrote."
+    ),
+)
+def generate_persona(
+    name: Annotated[str, F("Persona name. 1 to 100 characters. Must be unique in Studio.")],
+    system_prompt: Annotated[
+        str,
+        F("System prompt text. 1 to 20000 characters. Stored as JSON with mode append unless you ask for replace via import_studio_pack."),
+    ],
+    model: Annotated[
+        str,
+        F("Local model name to associate, for example llama3.2:3b. Used for partialModelInfo lookup only."),
+    ],
+    confirm: Annotated[
+        bool,
+        F("Set true to insert into Studio after a backup. Default false (pack only)."),
+    ] = False,
+) -> str:
     persona = PersonaConfig(name=name, system_prompt=system_prompt, model=model)
     pack = studio_writes.persona_pack(name, system_prompt, model)
     result = studio_writes.apply_pack(pack, confirm=confirm)
@@ -330,12 +430,25 @@ def generate_persona(name: str, system_prompt: str, model: str, confirm: bool = 
     return _json(result)
 
 
-@mcp.tool()
-def import_tool_config(tool_data: Dict[str, Any], confirm: bool = False) -> str:
-    """Save a tool config as a JSON pack for Toolbox import. Never writes the Studio database.
-
-    Configs with command, args or env are flagged as running a program on your machine.
-    """
+@mcp.tool(
+    **ann("Import tool config", read_only=False, idempotent=False),
+    description=(
+        "Save a Toolbox tool config as a JSON pack. Never writes the Studio database. "
+        "Use this for tools. Use import_studio_pack for personas, prompts, skills and toolsets. "
+        "Configs with command, args or env are flagged as running a program on your machine and stay pack-only. "
+        "Returns JSON with pack_path, wrote=false, and launch_risk when present."
+    ),
+)
+def import_tool_config(
+    tool_data: Annotated[
+        Dict[str, Any],
+        F("Tool object with name, toolId and config. command, args and env are allowed in the pack but never inserted into SQLite."),
+    ],
+    confirm: Annotated[
+        bool,
+        F("Accepted for symmetry. Tools are never inserted into SQLite. Default false."),
+    ] = False,
+) -> str:
     pack = studio_writes.tool_pack(tool_data)
     result = studio_writes.apply_pack(pack, confirm=confirm)
     result["tool_name"] = tool_data.get("name")
@@ -343,14 +456,25 @@ def import_tool_config(tool_data: Dict[str, Any], confirm: bool = False) -> str:
     return _json(result)
 
 
-@mcp.tool()
-def import_studio_pack(pack: Dict[str, Any], confirm: bool = False) -> str:
-    """Save a Studio pack as JSON. Tools, toolsets and skills are never inserted into SQLite.
-
-    Personas and prompts insert only with confirm=true and
-    MSTY_ALLOW_STUDIO_WRITES=1, after a timestamped backup, and only when Studio
-    is not holding the live database.
-    """
+@mcp.tool(
+    **ann("Import Studio pack", read_only=False, idempotent=False),
+    description=(
+        "Save a Studio pack as JSON. Tools, toolsets and skills stay pack-only. "
+        "Personas and prompts insert only with confirm=true and MSTY_ALLOW_STUDIO_WRITES=1, after a backup, and only when Studio is closed. "
+        "Use generate_persona for a single persona. Length caps apply (name/title 100, description 500, prompt 20000). "
+        "Returns JSON with pack_path, wrote, status and any error."
+    ),
+)
+def import_studio_pack(
+    pack: Annotated[
+        Dict[str, Any],
+        F("Pack object with optional personas, prompts, skills, tools, toolsets. include_escalation_persona adds the Frontier persona."),
+    ],
+    confirm: Annotated[
+        bool,
+        F("Set true to insert personas and prompts into Studio. Default false (pack only)."),
+    ] = False,
+) -> str:
     if pack.get("include_escalation_persona"):
         merged = dict(pack)
         personas = list(merged.get("personas") or [])
@@ -367,34 +491,71 @@ def import_studio_pack(pack: Dict[str, Any], confirm: bool = False) -> str:
 # ---------------------------------------------------------------------------
 
 
-@mcp.tool()
-def get_service_status() -> str:
-    """Status of Local AI, MLX, Llama.cpp, Vibe, and Nexus ports."""
-    return _json(service_status_map())
-
-
-@mcp.tool()
-def list_available_models() -> str:
-    """List models across local services."""
-    ports = current_ports()
-    models = {
-        "local_ai": list_models_from_port(ports["local_ai"]),
-        "mlx": list_models_from_port(ports["mlx"]),
-        "llamacpp": list_models_from_port(ports["llamacpp"]),
-        "vibe": list_models_from_port(ports["vibe"]),
-        "nexus": list_models_from_port(ports["nexus"]),
-    }
-    return _json({"models": models, "total": sum(len(v) for v in models.values())})
-
-
-@mcp.tool()
-def query_local_ai_service(
-    endpoint: str, method: str = "GET", data: Optional[Dict[str, Any]] = None
+@mcp.tool(
+    **ann("List models", read_only=True, open_world=True),
+    description=(
+        "List models on a local backend. "
+        "Use backend=all for every service, or local_ai, mlx, llamacpp, vibe or nexus. "
+        "Use chat_with_model to talk to a listed model. Read-only aside from local HTTP. "
+        "Returns JSON with backend and models, or an error when that service is down."
+    ),
+)
+def list_models(
+    backend: Annotated[
+        str,
+        F("Which backend to list. One of all, local_ai, mlx, llamacpp, vibe, nexus. Default all."),
+    ] = "all",
 ) -> str:
-    """Query Local AI (Ollama-compatible) service on an allow-list of read and chat paths.
+    cleaned = (backend or "all").strip().lower().replace("llama.cpp", "llamacpp")
+    if cleaned not in MODEL_BACKENDS:
+        return _json(
+            {
+                "error": f"Unknown backend {backend!r}. Use all, local_ai, mlx, llamacpp, vibe or nexus.",
+                "allowed": list(MODEL_BACKENDS),
+            }
+        )
+    if cleaned == "nexus":
+        return _json({"backend": "nexus", **nexus.query_nexus_models()})
+    ports = current_ports()
+    if cleaned == "all":
+        models = {
+            "local_ai": list_models_from_port(ports["local_ai"]),
+            "mlx": list_models_from_port(ports["mlx"]),
+            "llamacpp": list_models_from_port(ports["llamacpp"]),
+            "vibe": list_models_from_port(ports["vibe"]),
+            "nexus": nexus.query_nexus_models(),
+        }
+        named = [v for v in models.values() if isinstance(v, list)]
+        return _json({"backend": "all", "models": models, "total": sum(len(v) for v in named)})
+    if not check_service_available(ports[cleaned]):
+        return _json(
+            {"error": f"{cleaned} service not available", "models": [], "backend": cleaned}
+        )
+    return _json({"backend": cleaned, "models": list_models_from_port(ports[cleaned])})
 
-    Pull and create are not allowed here. Use install_model and set_model_settings.
-    """
+
+@mcp.tool(
+    **ann("Query Local AI service", read_only=False, idempotent=False, open_world=True),
+    description=(
+        "Call the Local AI (Ollama-compatible) HTTP API on an allow-list of read and chat paths. "
+        "Use install_model to pull and set_model_settings to create a variant. Pull and create are refused here. "
+        "Talks to the local network. Returns JSON with the API body or an allow-list error."
+    ),
+)
+def query_local_ai_service(
+    endpoint: Annotated[
+        str,
+        F("API path such as /api/tags or /v1/chat/completions. Leading slash optional. No query string."),
+    ],
+    method: Annotated[
+        str,
+        F("HTTP method. GET or POST. Default GET."),
+    ] = "GET",
+    data: Annotated[
+        Optional[Dict[str, Any]],
+        F("JSON body for POST. Omit for GET."),
+    ] = None,
+) -> str:
     decision = passthrough_allowed(endpoint, method)
     if not decision.get("allowed"):
         return _json(
@@ -415,16 +576,41 @@ def query_local_ai_service(
     )
 
 
-@mcp.tool()
-def chat_with_local_model(model: str, messages: List[Dict[str, str]]) -> str:
-    """Chat with a Local AI model."""
+@mcp.tool(
+    **ann("Chat with model", read_only=False, idempotent=False, open_world=True),
+    description=(
+        "Send a chat completion to a local model on Local AI, MLX or Llama.cpp. "
+        "Use list_models first if you need names. Use ask_frontier for a cloud model. "
+        "Calls the local OpenAI-compatible /v1/chat/completions endpoint. Not read-only. "
+        "Returns the backend JSON or an error when the service is down."
+    ),
+)
+def chat_with_model(
+    model: Annotated[str, F("Model name as listed by list_models for that backend.")],
+    messages: Annotated[
+        List[Dict[str, str]],
+        F("Chat messages. Each object needs role (system, user or assistant) and content."),
+    ],
+    backend: Annotated[
+        str,
+        F("Inference backend. One of local_ai, mlx, llamacpp. Default local_ai."),
+    ] = "local_ai",
+) -> str:
+    cleaned = (backend or "local_ai").strip().lower().replace("llama.cpp", "llamacpp")
+    if cleaned not in CHAT_BACKENDS:
+        return _json(
+            {
+                "error": f"Unknown backend {backend!r}. Use local_ai, mlx or llamacpp.",
+                "allowed": list(CHAT_BACKENDS),
+            }
+        )
     ports = current_ports()
-    if not check_service_available(ports["local_ai"]):
-        return _json({"error": "Local AI service not available"})
+    if not check_service_available(ports[cleaned]):
+        return _json({"error": f"{cleaned} service not available"})
     return _json(
         make_api_request(
             "/v1/chat/completions",
-            port=ports["local_ai"],
+            port=ports[cleaned],
             method="POST",
             data={"model": model, "messages": messages, "stream": False},
             timeout=60,
@@ -432,15 +618,31 @@ def chat_with_local_model(model: str, messages: List[Dict[str, str]]) -> str:
     )
 
 
-@mcp.tool()
+@mcp.tool(
+    **ann("Get hardware profile", read_only=True),
+    description=(
+        "Read chip, CPU cores, RAM, GPU/VRAM and Apple Silicon generation for model sizing. "
+        "Use recommend_model to turn this into a model pick. Read-only. Returns JSON hardware fields."
+    ),
+)
 def get_hardware_profile() -> str:
-    """Chip, CPU cores, RAM, GPU/VRAM, and Apple Silicon generation for model sizing."""
     return _json(_hardware_profile())
 
 
-@mcp.tool()
-def recommend_model(use_case: str = "general") -> str:
-    """Recommend a local model from hardware fit, then 30-day Studio usage when it still fits."""
+@mcp.tool(
+    **ann("Recommend model", read_only=True),
+    description=(
+        "Recommend a local model from hardware fit, then 30-day Studio usage when it still fits. "
+        "Use get_hardware_profile for the raw numbers. Use install_model to pull the pick. "
+        "Read-only. Returns JSON with the recommendation and a hardware summary."
+    ),
+)
+def recommend_model(
+    use_case: Annotated[
+        str,
+        F("Intended use. One of general, coding, chat, summarisation, or a short free-text use case. Default general."),
+    ] = "general",
+) -> str:
     profile = _hardware_profile()
     insights = analytics.get_insights_usage(timeframe="30d")
     result = hardware_catalog.recommend(
@@ -458,23 +660,59 @@ def recommend_model(use_case: str = "general") -> str:
     return _json(result)
 
 
-@mcp.tool()
-def install_model(model: str, confirm: bool = False, service: str = "local_ai") -> str:
-    """Pull a model through Local AI (Ollama-compatible /api/pull). Requires confirm=true."""
+@mcp.tool(
+    **ann("Install model", read_only=False, idempotent=False, open_world=True),
+    description=(
+        "Pull a model through Local AI (Ollama-compatible /api/pull). "
+        "Use recommend_model to pick a size. MLX and Llama.cpp have no pull API here. "
+        "Only bare Ollama names (registry.ollama.ai) and hf.co/ paths are allowed. "
+        "Needs confirm=true to write. Returns JSON with wrote, model and any error."
+    ),
+)
+def install_model(
+    model: Annotated[
+        str,
+        F("Model to pull. Bare Ollama name such as llama3.2:3b, or hf.co/org/model. No other hosts."),
+    ],
+    confirm: Annotated[
+        bool,
+        F("Set true to run /api/pull. Default false (preview)."),
+    ] = False,
+    service: Annotated[
+        str,
+        F("Pull service. local_ai only. mlx and llamacpp are refused. Default local_ai."),
+    ] = "local_ai",
+) -> str:
     return _json(pull_model(model, confirm=confirm, service=service))
 
 
-@mcp.tool()
+@mcp.tool(
+    **ann("Set model settings", read_only=False, idempotent=False, open_world=True),
+    description=(
+        "Create a tuned Ollama variant via /api/create from an installed base model. "
+        "Use install_model first if the base is missing. Does not overwrite an existing name. "
+        "Needs confirm=true to write. Returns JSON with wrote, variant and a Modelfile preview."
+    ),
+)
 def set_model_settings(
-    base_model: str,
-    variant_name: str,
-    temperature: Optional[float] = None,
-    top_p: Optional[float] = None,
-    num_ctx: Optional[int] = None,
-    system: Optional[str] = None,
-    confirm: bool = False,
+    base_model: Annotated[str, F("Installed base model name, for example llama3.2:3b.")],
+    variant_name: Annotated[str, F("New variant name to create. Must not already exist.")],
+    temperature: Annotated[
+        Optional[float], F("Sampling temperature 0 to 2. Omit to leave unset.")
+    ] = None,
+    top_p: Annotated[
+        Optional[float], F("Nucleus sampling 0 to 1. Omit to leave unset.")
+    ] = None,
+    num_ctx: Annotated[
+        Optional[int], F("Context window in tokens. Positive integer. Omit to leave unset.")
+    ] = None,
+    system: Annotated[
+        Optional[str], F("System prompt for the variant. Max 20000 characters. Omit to leave unset.")
+    ] = None,
+    confirm: Annotated[
+        bool, F("Set true to POST /api/create. Default false (preview).")
+    ] = False,
 ) -> str:
-    """Create a tuned Ollama variant via /api/create. Requires confirm=true to apply."""
     return _json(
         create_variant(
             base_model,
@@ -488,70 +726,31 @@ def set_model_settings(
     )
 
 
-@mcp.tool()
-def list_mlx_models() -> str:
-    """List MLX models from the MLX service."""
-    ports = current_ports()
-    if not check_service_available(ports["mlx"]):
-        return _json({"error": "MLX service not available", "models": []})
-    return _json({"models": list_models_from_port(ports["mlx"])})
-
-
-@mcp.tool()
-def chat_with_mlx_model(model: str, messages: List[Dict[str, str]]) -> str:
-    """Chat with an MLX model."""
-    ports = current_ports()
-    if not check_service_available(ports["mlx"]):
-        return _json({"error": "MLX service not available"})
-    return _json(
-        make_api_request(
-            "/v1/chat/completions",
-            port=ports["mlx"],
-            method="POST",
-            data={"model": model, "messages": messages, "stream": False},
-            timeout=60,
-        )
-    )
-
-
-@mcp.tool()
-def list_llamacpp_models() -> str:
-    """List Llama.cpp models."""
-    ports = current_ports()
-    if not check_service_available(ports["llamacpp"]):
-        return _json({"error": "LLaMA.cpp service not available", "models": []})
-    return _json({"models": list_models_from_port(ports["llamacpp"])})
-
-
-@mcp.tool()
-def chat_with_llamacpp_model(model: str, messages: List[Dict[str, str]]) -> str:
-    """Chat with a Llama.cpp model."""
-    ports = current_ports()
-    if not check_service_available(ports["llamacpp"]):
-        return _json({"error": "LLaMA.cpp service not available"})
-    return _json(
-        make_api_request(
-            "/v1/chat/completions",
-            port=ports["llamacpp"],
-            method="POST",
-            data={"model": model, "messages": messages, "stream": False},
-            timeout=60,
-        )
-    )
-
-
-@mcp.tool()
+@mcp.tool(
+    **ann("Get Vibe proxy status", read_only=True, open_world=True),
+    description=(
+        "Check whether the Vibe CLI proxy port is up. "
+        "Use query_vibe_proxy to send a query. Local HTTP. Returns JSON status or unavailable."
+    ),
+)
 def get_vibe_proxy_status() -> str:
-    """Check Vibe CLI proxy status."""
     ports = current_ports()
     if not check_service_available(ports["vibe"]):
         return _json({"status": "unavailable", "port": ports["vibe"]})
     return _json(make_api_request("/status", port=ports["vibe"]))
 
 
-@mcp.tool()
-def query_vibe_proxy(query: str) -> str:
-    """Query Vibe CLI proxy."""
+@mcp.tool(
+    **ann("Query Vibe proxy", read_only=False, idempotent=False, open_world=True),
+    description=(
+        "Send a query to the Vibe CLI proxy. "
+        "Use get_vibe_proxy_status first if you only need liveness. Local HTTP POST. "
+        "Returns the proxy JSON or an error when the proxy is down."
+    ),
+)
+def query_vibe_proxy(
+    query: Annotated[str, F("Query text to send to the Vibe proxy. Non-empty string.")],
+) -> str:
     ports = current_ports()
     if not check_service_available(ports["vibe"]):
         return _json({"error": "Vibe proxy not available"})
@@ -563,21 +762,54 @@ def query_vibe_proxy(query: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-@mcp.tool()
-def get_model_performance_metrics(model_id: Optional[str] = None, timeframe: str = "7d") -> str:
-    """Performance metrics from Studio insightsLanguageModelUsage."""
+@mcp.tool(
+    **ann("Get model performance metrics", read_only=True),
+    description=(
+        "Read token, latency and call counts from Studio insightsLanguageModelUsage. "
+        "Use get_insights_usage as the same data under a shorter name. Use get_conversation_patterns for chat shape. "
+        "Read-only. Returns JSON totals and per-model rows."
+    ),
+)
+def get_model_performance_metrics(
+    model_id: Annotated[
+        Optional[str], F("Optional model id to filter. Omit for all models.")
+    ] = None,
+    timeframe: Annotated[
+        str, F("Window such as 7d, 30d or all. Default 7d.")
+    ] = "7d",
+) -> str:
     return _json(analytics.get_insights_usage(model_id=model_id, timeframe=timeframe))
 
 
-@mcp.tool()
-def analyse_conversation_patterns(model_id: Optional[str] = None) -> str:
-    """Analyse conversation patterns from Studio data."""
+@mcp.tool(
+    **ann("Get conversation patterns", read_only=True),
+    description=(
+        "Summarise conversation patterns from Studio data for one model or all models. "
+        "Use get_model_performance_metrics for speed and token counts. Read-only. Returns JSON pattern stats."
+    ),
+)
+def get_conversation_patterns(
+    model_id: Annotated[
+        Optional[str], F("Optional model id to filter. Omit for all models.")
+    ] = None,
+) -> str:
     return _json(analytics.analyse_conversation_patterns(model_id=model_id))
 
 
-@mcp.tool()
-def compare_model_responses(prompt: str, models: List[str]) -> str:
-    """Compare responses from multiple local models (best-effort)."""
+@mcp.tool(
+    **ann("Compare model responses", read_only=False, idempotent=False, open_world=True),
+    description=(
+        "Send the same prompt to several Local AI models and compare latency and a preview of each reply. "
+        "Use chat_with_model for a full conversation with one model. Calls local inference. "
+        "Returns JSON with comparisons. Best-effort if a model is cold."
+    ),
+)
+def compare_model_responses(
+    prompt: Annotated[str, F("Prompt to send to every listed model. Non-empty string.")],
+    models: Annotated[
+        List[str], F("Local AI model names to compare. At least one name.")
+    ],
+) -> str:
     ports = current_ports()
     comparisons = []
     for model in models:
@@ -610,15 +842,25 @@ def compare_model_responses(prompt: str, models: List[str]) -> str:
     return _json({"prompt": prompt[:200], "comparisons": comparisons})
 
 
-@mcp.tool()
+@mcp.tool(
+    **ann("Optimise knowledge stacks", read_only=True),
+    description=(
+        "Suggest Knowledge Stack changes from live Studio Next Gen, draft and compose status. "
+        "Does not edit stacks. Use list_knowledge_stacks to browse them. Read-only. Returns JSON suggestions."
+    ),
+)
 def optimise_knowledge_stacks() -> str:
-    """Suggest Knowledge Stack optimisations from live Studio data."""
     return _json(analytics.optimise_knowledge_stacks())
 
 
-@mcp.tool()
+@mcp.tool(
+    **ann("Suggest persona improvements", read_only=True),
+    description=(
+        "Suggest persona edits from live Studio personas. "
+        "Does not write personas. Use generate_persona to create one. Read-only. Returns JSON suggestions."
+    ),
+)
 def suggest_persona_improvements() -> str:
-    """Suggest persona improvements from live Studio personas."""
     return _json(analytics.suggest_persona_improvements())
 
 
@@ -627,9 +869,23 @@ def suggest_persona_improvements() -> str:
 # ---------------------------------------------------------------------------
 
 
-@mcp.tool()
-def run_calibration_test(model_id: Optional[str] = None, category: str = "general") -> str:
-    """Run calibration test on a local model."""
+@mcp.tool(
+    **ann("Run calibration test", read_only=False, idempotent=False, open_world=True),
+    description=(
+        "Run heuristic calibration prompts against a Local AI model and store scores in ~/.msty-admin. "
+        "Use evaluate_response_quality to score a single reply without calling the model. "
+        "Calls local inference and writes sidecar metrics. Returns JSON with tests_run and average_score."
+    ),
+)
+def run_calibration_test(
+    model_id: Annotated[
+        Optional[str], F("Local AI model to test. Omit to use the first installed model.")
+    ] = None,
+    category: Annotated[
+        str,
+        F("Prompt category, or general for one prompt per category. Default general."),
+    ] = "general",
+) -> str:
     from src.phase4_5_tools import (
         CALIBRATION_PROMPTS,
         evaluate_response_heuristic,
@@ -743,9 +999,21 @@ def run_calibration_test(model_id: Optional[str] = None, category: str = "genera
     )
 
 
-@mcp.tool()
-def evaluate_response_quality(prompt: str, response: str, category: str = "general") -> str:
-    """Evaluate response quality with heuristic rubric."""
+@mcp.tool(
+    **ann("Evaluate response quality", read_only=True),
+    description=(
+        "Score a prompt and reply with a local heuristic rubric. "
+        "Does not call a model. Use run_calibration_test to generate replies first. "
+        "Read-only. Returns JSON with quality_score, passed and criteria."
+    ),
+)
+def evaluate_response_quality(
+    prompt: Annotated[str, F("Original prompt text.")],
+    response: Annotated[str, F("Model reply to score.")],
+    category: Annotated[
+        str, F("Rubric category such as general, analysis or coding. Default general.")
+    ] = "general",
+) -> str:
     from src.phase4_5_tools import evaluate_response_heuristic
 
     evaluation = evaluate_response_heuristic(prompt, response, category)
@@ -759,9 +1027,15 @@ def evaluate_response_quality(prompt: str, response: str, category: str = "gener
     )
 
 
-@mcp.tool()
+@mcp.tool(
+    **ann("Identify handoff triggers", read_only=True),
+    description=(
+        "Flag models that look slow or low-throughput from 30-day Studio insights. "
+        "This only reports. Use escalate_if_needed or ask_frontier to send a question to the cloud. "
+        "Read-only. Returns JSON triggers and hook_api."
+    ),
+)
 def identify_handoff_triggers() -> str:
-    """Identify handoff patterns from insights + calibration heuristics."""
     insights = analytics.get_insights_usage(timeframe="30d")
     triggers = []
     for model in insights.get("models", []):
@@ -797,11 +1071,24 @@ def identify_handoff_triggers() -> str:
     )
 
 
-@mcp.tool()
+@mcp.tool(
+    **ann("Escalate if needed", read_only=False, idempotent=False, open_world=True),
+    description=(
+        "Send a hard question to Cursor, Grok or Claude via the Frontier helper. "
+        "Use ask_frontier for the same call without a reason field. Use identify_handoff_triggers to decide whether to escalate. "
+        "Calls the network. Needs the matching API key. Returns JSON with escalated, answer and hook_api."
+    ),
+)
 def escalate_if_needed(
-    question: str, reason: str = "", provider: Optional[str] = None
+    question: Annotated[str, F("Question to send to the cloud model.")],
+    reason: Annotated[
+        str, F("Optional reason recorded in the result. Default empty.")
+    ] = "",
+    provider: Annotated[
+        Optional[str],
+        F("Cloud provider: cursor, grok or claude. Default cursor."),
+    ] = None,
 ) -> str:
-    """Call ask_frontier. Closest equivalent to a Msty hook (Studio has none)."""
     from src.frontier import ask_frontier as dispatch_frontier
 
     try:
@@ -826,9 +1113,21 @@ def escalate_if_needed(
     )
 
 
-@mcp.tool()
-def get_calibration_history(model_id: Optional[str] = None, limit: int = 50) -> str:
-    """Get calibration history from ~/.msty-admin metrics DB."""
+@mcp.tool(
+    **ann("Get calibration history", read_only=True),
+    description=(
+        "Read calibration scores from the sidecar metrics database under ~/.msty-admin. "
+        "Use run_calibration_test to add rows. Read-only. Returns JSON history rows."
+    ),
+)
+def get_calibration_history(
+    model_id: Annotated[
+        Optional[str], F("Optional model id to filter. Omit for all models.")
+    ] = None,
+    limit: Annotated[
+        int, F("Maximum rows. Integer from 1 to 500. Default 50.")
+    ] = 50,
+) -> str:
     from src.phase4_5_tools import fetch_calibration_history
 
     return _json(fetch_calibration_history(model_id=model_id, limit=limit))
@@ -839,15 +1138,27 @@ def get_calibration_history(model_id: Optional[str] = None, limit: int = 50) -> 
 # ---------------------------------------------------------------------------
 
 
-@mcp.tool()
+@mcp.tool(
+    **ann("Bloom evaluate model", read_only=False, idempotent=False, open_world=True),
+    description=(
+        "Run a Bloom behavioural evaluation on a local model. Never invents a score. "
+        "Needs ANTHROPIC_API_KEY and a Bloom checkout. Use bloom_validate_model first. "
+        "Calls the network. Returns JSON with quality_score or an honest error and quality_score null."
+    ),
+)
 def bloom_evaluate_model(
-    model: str,
-    behavior: str,
-    task_category: Optional[str] = None,
-    total_evals: int = 3,
-    max_turns: int = 2,
+    model: Annotated[str, F("Local Ollama model name, for example llama3.2:3b.")],
+    behavior: Annotated[str, F("Bloom behaviour id from bloom_list_behaviors.")],
+    task_category: Annotated[
+        Optional[str], F("Optional task category for thresholds. Omit for default.")
+    ] = None,
+    total_evals: Annotated[
+        int, F("Number of evaluation scenarios. Integer 1 to 20. Default 3.")
+    ] = 3,
+    max_turns: Annotated[
+        int, F("Maximum conversation turns per scenario. Integer 1 to 10. Default 2.")
+    ] = 2,
 ) -> str:
-    """Run Bloom behavioural evaluation on a model. Never returns an invented score."""
     import os
 
     from src.bloom.evaluator import evaluate_sync
@@ -904,34 +1215,62 @@ def bloom_evaluate_model(
     return _json(payload)
 
 
-@mcp.tool()
-def bloom_check_handoff(model: str, task_category: str) -> str:
-    """Check whether a model should hand off to Claude for a task category."""
+@mcp.tool(
+    **ann("Bloom check handoff", read_only=True),
+    description=(
+        "Decide from Bloom history whether a model should hand off a task category. "
+        "Does not call Bloom. Use bloom_evaluate_model to add history. Read-only. Returns JSON handoff advice."
+    ),
+)
+def bloom_check_handoff(
+    model: Annotated[str, F("Local model name whose Bloom history to read.")],
+    task_category: Annotated[str, F("Task category such as research, coding or advisory.")],
+) -> str:
     from src.bloom.evaluator import handoff_from_history
 
     return _json(handoff_from_history(model, task_category))
 
 
-@mcp.tool()
-def bloom_get_history(model: Optional[str] = None, behavior: Optional[str] = None) -> str:
-    """Get Bloom evaluation history from ~/.msty-admin/bloom-history.json."""
+@mcp.tool(
+    **ann("Bloom get history", read_only=True),
+    description=(
+        "Read persisted Bloom evaluation rows from ~/.msty-admin/bloom-history.json. "
+        "Use bloom_evaluate_model to add rows. Read-only. Returns JSON evaluations."
+    ),
+)
+def bloom_get_history(
+    model: Annotated[Optional[str], F("Optional model name filter.")] = None,
+    behavior: Annotated[Optional[str], F("Optional behaviour id filter.")] = None,
+) -> str:
     from src.bloom.evaluator import load_persisted_history
 
     evaluations = load_persisted_history(model=model, behavior=behavior, limit=50)
     return _json({"evaluations": evaluations, "model": model, "behavior": behavior})
 
 
-@mcp.tool()
+@mcp.tool(
+    **ann("Bloom list behaviours", read_only=True),
+    description=(
+        "List Bloom behaviours this server can evaluate. "
+        "Use bloom_evaluate_model with one of these ids. Read-only. Returns JSON behaviors and count."
+    ),
+)
 def bloom_list_behaviors() -> str:
-    """List available Bloom behaviours."""
     from src.bloom.cv_behaviors import CUSTOM_BEHAVIORS
 
     return _json({"behaviors": list(CUSTOM_BEHAVIORS.keys()), "count": len(CUSTOM_BEHAVIORS)})
 
 
-@mcp.tool()
-def bloom_get_thresholds(task_category: str) -> str:
-    """Get quality thresholds for a task category."""
+@mcp.tool(
+    **ann("Bloom get thresholds", read_only=True),
+    description=(
+        "Read quality thresholds and handoff triggers for a task category. "
+        "Use bloom_check_handoff to apply them to history. Read-only. Returns JSON thresholds."
+    ),
+)
+def bloom_get_thresholds(
+    task_category: Annotated[str, F("Task category such as research, coding, advisory or general.")],
+) -> str:
     from src.bloom.cv_behaviors import QUALITY_THRESHOLDS
 
     return _json(
@@ -942,9 +1281,16 @@ def bloom_get_thresholds(task_category: str) -> str:
     )
 
 
-@mcp.tool()
-def bloom_validate_model(model: str) -> str:
-    """Validate model suitability for Bloom evaluation."""
+@mcp.tool(
+    **ann("Bloom validate model", read_only=True, open_world=True),
+    description=(
+        "Check whether a local Ollama model is reachable and suitable for Bloom. "
+        "Use this before bloom_evaluate_model. Local HTTP. Returns JSON validation fields."
+    ),
+)
+def bloom_validate_model(
+    model: Annotated[str, F("Local Ollama model name to validate.")],
+) -> str:
     from src.bloom.ollama_adapter import OllamaModelAdapter
 
     adapter = OllamaModelAdapter()
@@ -956,51 +1302,111 @@ def bloom_validate_model(model: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-@mcp.tool()
+@mcp.tool(
+    **ann("List Studio catalogue", read_only=True),
+    description=(
+        "Return row counts for every known Studio entity type. "
+        "Use a specific list_* tool for the rows themselves. Read-only. Returns JSON counts."
+    ),
+)
 def list_studio_catalogue() -> str:
-    """Summary counts for all known Studio entity types."""
     return _json(inventory.catalogue_summary())
 
 
-@mcp.tool()
-def list_workspaces(limit: int = 100) -> str:
-    """List Studio workspaces."""
+@mcp.tool(
+    **ann("List workspaces", read_only=True),
+    description=(
+        "List Studio workspaces. "
+        "Use get_studio_entity with entity=workspaces for one workspace, and list_studio_catalogue for counts. "
+        "Read-only. Returns JSON items up to limit."
+    ),
+)
+def list_workspaces(
+    limit: Annotated[int, F("Maximum rows. Integer from 1 to 500. Default 100.")] = 100,
+) -> str:
     return _json(inventory.list_entities("workspaces", limit=limit))
 
 
-@mcp.tool()
-def list_personas(limit: int = 100) -> str:
-    """List personas from Persona Studio."""
+@mcp.tool(
+    **ann("List personas", read_only=True),
+    description=(
+        "List personas from Persona Studio. "
+        "Use generate_persona to create one, list_shadow_personas for Shadow Personas, and get_studio_entity for one row. "
+        "Read-only. Returns JSON items up to limit."
+    ),
+)
+def list_personas(
+    limit: Annotated[int, F("Maximum rows. Integer from 1 to 500. Default 100.")] = 100,
+) -> str:
     return _json(inventory.list_entities("personas", limit=limit))
 
 
-@mcp.tool()
-def list_shadow_personas(limit: int = 100) -> str:
-    """List Shadow Personas."""
+@mcp.tool(
+    **ann("List shadow personas", read_only=True),
+    description=(
+        "List Shadow Personas, which are variants of ordinary personas. "
+        "Use list_personas for the main Persona Studio list, and get_studio_entity for one row. "
+        "Read-only. Returns JSON items up to limit."
+    ),
+)
+def list_shadow_personas(
+    limit: Annotated[int, F("Maximum rows. Integer from 1 to 500. Default 100.")] = 100,
+) -> str:
     return _json(inventory.list_entities("shadow_personas", limit=limit))
 
 
-@mcp.tool()
-def list_crews(limit: int = 100) -> str:
-    """List Crew Mode crews."""
+@mcp.tool(
+    **ann("List crews", read_only=True),
+    description=(
+        "List Crew Mode crews from Studio. "
+        "Use get_studio_entity with entity=crews for one crew, and list_personas for members. "
+        "Read-only. Returns JSON items up to limit."
+    ),
+)
+def list_crews(
+    limit: Annotated[int, F("Maximum rows. Integer from 1 to 500. Default 100.")] = 100,
+) -> str:
     return _json(inventory.list_entities("crews", limit=limit))
 
 
-@mcp.tool()
-def list_knowledge_stacks(limit: int = 100) -> str:
-    """List Knowledge Stacks (including Next Gen)."""
+@mcp.tool(
+    **ann("List knowledge stacks", read_only=True),
+    description=(
+        "List Knowledge Stacks, including Next Gen stacks. "
+        "Use optimise_knowledge_stacks for suggestions, and get_studio_entity for one stack. "
+        "Read-only. Returns JSON items up to limit."
+    ),
+)
+def list_knowledge_stacks(
+    limit: Annotated[int, F("Maximum rows. Integer from 1 to 500. Default 100.")] = 100,
+) -> str:
     return _json(inventory.list_entities("knowledge_stacks", limit=limit))
 
 
-@mcp.tool()
-def list_turnstiles(limit: int = 100) -> str:
-    """List Turnstiles / Turnstiles vNext definitions."""
+@mcp.tool(
+    **ann("List turnstiles", read_only=True),
+    description=(
+        "List Turnstile and Turnstiles vNext routing definitions from Studio. "
+        "Use get_studio_entity with entity=turnstiles for one row, and list_studio_catalogue for counts. "
+        "Read-only. Returns JSON items up to limit."
+    ),
+)
+def list_turnstiles(
+    limit: Annotated[int, F("Maximum rows. Integer from 1 to 500. Default 100.")] = 100,
+) -> str:
     return _json(inventory.list_entities("turnstiles", limit=limit))
 
 
-@mcp.tool()
-def list_skills(limit: int = 100) -> str:
-    """List Skills Studio preferences and folders."""
+@mcp.tool(
+    **ann("List skills", read_only=True),
+    description=(
+        "List Skills Studio preferences and folders. Skills are imported as JSON packs, not SQLite inserts. "
+        "Read-only. Returns JSON skills and folders."
+    ),
+)
+def list_skills(
+    limit: Annotated[int, F("Maximum rows. Integer from 1 to 500. Default 100.")] = 100,
+) -> str:
     return _json(
         {
             "skills": inventory.list_entities("skills", limit=limit),
@@ -1009,21 +1415,45 @@ def list_skills(limit: int = 100) -> str:
     )
 
 
-@mcp.tool()
-def list_live_contexts(limit: int = 100) -> str:
-    """List Live Contexts."""
+@mcp.tool(
+    **ann("List live contexts", read_only=True),
+    description=(
+        "List Live Contexts that Studio injects into chats. "
+        "Use list_context_studio for attachment files, and get_studio_entity for one row. "
+        "Read-only. Returns JSON items up to limit."
+    ),
+)
+def list_live_contexts(
+    limit: Annotated[int, F("Maximum rows. Integer from 1 to 500. Default 100.")] = 100,
+) -> str:
     return _json(inventory.list_entities("live_contexts", limit=limit))
 
 
-@mcp.tool()
-def list_prompts(limit: int = 100) -> str:
-    """List Prompts Studio library entries."""
+@mcp.tool(
+    **ann("List prompts", read_only=True),
+    description=(
+        "List Prompts Studio library entries. "
+        "Use import_studio_pack to add prompts, and get_studio_entity for one row. "
+        "Read-only. Returns JSON items up to limit."
+    ),
+)
+def list_prompts(
+    limit: Annotated[int, F("Maximum rows. Integer from 1 to 500. Default 100.")] = 100,
+) -> str:
     return _json(inventory.list_entities("prompts", limit=limit))
 
 
-@mcp.tool()
-def list_context_studio(limit: int = 100) -> str:
-    """List Context Studio attachments and folders (Studio 2.9)."""
+@mcp.tool(
+    **ann("List Context Studio", read_only=True),
+    description=(
+        "List Context Studio attachments and their folders. "
+        "Use list_live_contexts for Live Context rows, and get_studio_entity for one attachment. "
+        "Read-only. Returns JSON attachments and folders up to limit."
+    ),
+)
+def list_context_studio(
+    limit: Annotated[int, F("Maximum rows. Integer from 1 to 500. Default 100.")] = 100,
+) -> str:
     return _json(
         {
             "attachments": inventory.list_entities("attachments", limit=limit),
@@ -1032,27 +1462,48 @@ def list_context_studio(limit: int = 100) -> str:
     )
 
 
-@mcp.tool()
-def list_agent_plans(limit: int = 100) -> str:
-    """List Agent Mode plans."""
+@mcp.tool(
+    **ann("List agent plans", read_only=True),
+    description=(
+        "List Agent Mode plans stored in Studio. "
+        "Use get_studio_entity with entity=agent_plans for one plan, and list_crews for Crew Mode. "
+        "Read-only. Returns JSON items up to limit."
+    ),
+)
+def list_agent_plans(
+    limit: Annotated[int, F("Maximum rows. Integer from 1 to 500. Default 100.")] = 100,
+) -> str:
     return _json(inventory.list_entities("agent_plans", limit=limit))
 
 
-@mcp.tool()
-def get_studio_entity(entity: str, entity_id: str) -> str:
-    """Fetch a single Studio entity by type and id.
-
-    ``entity`` is a catalogue key. Plural names are canonical
-    (``personas``, ``crews``, ``knowledge_stacks``, …). Singular aliases
-    (``persona``, ``crew``, ``knowledge_stack``) are accepted. Hyphens are
-    treated as underscores. Unknown values return the allowed list.
-    """
+@mcp.tool(
+    **ann("Get Studio entity", read_only=True),
+    description=(
+        "Fetch one Studio entity by catalogue type and id. "
+        "Use the matching list_* tool to discover ids. Plural keys are canonical. Singular aliases are accepted. "
+        "Read-only. Returns JSON item or the allowed type list."
+    ),
+)
+def get_studio_entity(
+    entity: Annotated[
+        str,
+        F("Catalogue key such as personas, crews or knowledge_stacks. Singular aliases such as persona are accepted."),
+    ],
+    entity_id: Annotated[str, F("Row id in that table.")],
+) -> str:
     return _json(inventory.get_entity(entity, entity_id))
 
 
-@mcp.tool()
-def get_schema_migrations(limit: int = 20) -> str:
-    """Show recent Drizzle schema migrations from the Studio database."""
+@mcp.tool(
+    **ann("Get schema migrations", read_only=True),
+    description=(
+        "Show recent Drizzle schema migrations from the Studio database. "
+        "Use get_msty_installation for the app version. Read-only. Returns JSON migrations."
+    ),
+)
+def get_schema_migrations(
+    limit: Annotated[int, F("Maximum rows. Integer from 1 to 100. Default 20.")] = 20,
+) -> str:
     try:
         rows = db.fetch_all(
             "__drizzle_migrations",
@@ -1064,9 +1515,20 @@ def get_schema_migrations(limit: int = 20) -> str:
         return _json({"error": str(exc), "migrations": []})
 
 
-@mcp.tool()
-def export_workflow_pack(include: Optional[List[str]] = None, limit: int = 200) -> str:
-    """Export a read-only workflow pack (personas, tools, turnstiles, stacks, …)."""
+@mcp.tool(
+    **ann("Export workflow pack", read_only=True),
+    description=(
+        "Export a read-only workflow pack of personas, tools, turnstiles and stacks. "
+        "Does not write Studio. Use import_studio_pack to bring a pack back in. Returns JSON pack."
+    ),
+)
+def export_workflow_pack(
+    include: Annotated[
+        Optional[List[str]],
+        F("Optional entity kinds to include, such as personas or tools. Omit for the default set."),
+    ] = None,
+    limit: Annotated[int, F("Maximum rows per kind. Integer from 1 to 500. Default 200.")] = 200,
+) -> str:
     return _json(inventory.export_workflow_pack(include=include, limit=limit))
 
 
@@ -1075,31 +1537,49 @@ def export_workflow_pack(include: Optional[List[str]] = None, limit: int = 200) 
 # ---------------------------------------------------------------------------
 
 
-@mcp.tool()
-def detect_nexus() -> str:
-    """Detect Msty Nexus local gateway."""
+@mcp.tool(
+    **ann("Get Nexus", read_only=True, open_world=True),
+    description=(
+        "Detect the Msty Nexus local gateway and its port. "
+        "Use list_models with backend=nexus for model names. Local HTTP. Returns JSON found, endpoint and port."
+    ),
+)
+def get_nexus() -> str:
     return _json(nexus.nexus_status())
 
 
-@mcp.tool()
-def list_nexus_models() -> str:
-    """List models exposed by the Nexus OpenAI-compatible endpoint."""
-    return _json(nexus.query_nexus_models())
-
-
-@mcp.tool()
+@mcp.tool(
+    **ann("Query Nexus", read_only=False, idempotent=False, open_world=True),
+    description=(
+        "Call the Nexus OpenAI-compatible gateway with a path. "
+        "Use list_models with backend=nexus for model names. Local HTTP. Returns the gateway JSON or an error."
+    ),
+)
 def query_nexus(
-    path: str = "/v1/models",
-    method: str = "GET",
-    data: Optional[Dict[str, Any]] = None,
+    path: Annotated[
+        str, F("Gateway path such as /v1/models or /v1/chat/completions. Default /v1/models.")
+    ] = "/v1/models",
+    method: Annotated[str, F("HTTP method. GET or POST. Default GET.")] = "GET",
+    data: Annotated[
+        Optional[Dict[str, Any]], F("JSON body for POST. Omit for GET.")
+    ] = None,
 ) -> str:
-    """Query the Nexus gateway with an arbitrary path."""
     return _json(nexus.query_nexus(path=path, method=method, data=data))
 
 
-@mcp.tool()
-def get_insights_usage(model_id: Optional[str] = None, timeframe: str = "7d") -> str:
-    """Alias for insights-backed usage analytics."""
+@mcp.tool(
+    **ann("Get insights usage", read_only=True),
+    description=(
+        "Read Studio insights usage for one model or all models. "
+        "Same data as get_model_performance_metrics. Read-only. Returns JSON totals and models."
+    ),
+)
+def get_insights_usage(
+    model_id: Annotated[
+        Optional[str], F("Optional model id to filter. Omit for all models.")
+    ] = None,
+    timeframe: Annotated[str, F("Window such as 7d, 30d or all. Default 7d.")] = "7d",
+) -> str:
     return _json(analytics.get_insights_usage(model_id=model_id, timeframe=timeframe))
 
 
@@ -1108,9 +1588,23 @@ def get_insights_usage(model_id: Optional[str] = None, timeframe: str = "7d") ->
 # ---------------------------------------------------------------------------
 
 
-@mcp.tool()
-def ask_frontier(question: str, provider: Optional[str] = None, fresh: bool = False) -> str:
-    """Answer a hard question via Cursor (default), Grok, or Claude. Call once, then stop."""
+@mcp.tool(
+    **ann("Ask Frontier", read_only=False, idempotent=False, open_world=True),
+    description=(
+        "Send one hard question to Cursor (default), Grok or Claude and return the answer. "
+        "Stay as this one tool. Use escalate_if_needed when you also want a reason field. "
+        "Calls the network. Needs the matching API key. Call once, then stop. Returns the answer text."
+    ),
+)
+def ask_frontier(
+    question: Annotated[str, F("Question for the cloud model.")],
+    provider: Annotated[
+        Optional[str], F("Cloud provider: cursor, grok or claude. Default cursor.")
+    ] = None,
+    fresh: Annotated[
+        bool, F("Set true to start a new cloud chat instead of continuing the last session. Default false.")
+    ] = False,
+) -> str:
     from src.frontier import ask_frontier as dispatch_frontier
 
     try:

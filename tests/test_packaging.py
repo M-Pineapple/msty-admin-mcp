@@ -66,7 +66,28 @@ def test_readme_has_no_third_party_badge_host():
 
 
 def test_tool_count_matches_server_decorators():
-    from src.server import TOOL_COUNT
+    import asyncio
+
+    from src.server import TOOL_COUNT, mcp
 
     text = (ROOT / "src" / "server.py").read_text(encoding="utf-8")
-    assert text.count("@mcp.tool()") == TOOL_COUNT
+    assert text.count("@mcp.tool(") == TOOL_COUNT
+    tools = asyncio.run(mcp.list_tools())
+    assert len(tools) == TOOL_COUNT == 54
+
+
+def test_glama_json_lists_maintainer():
+    import json
+
+    data = json.loads((ROOT / "glama.json").read_text(encoding="utf-8"))
+    assert data["maintainers"] == ["M-Pineapple"]
+    assert data["$schema"] == "https://glama.ai/mcp/schemas/server.json"
+
+
+def test_dockerfile_is_slim_python_312():
+    text = (ROOT / "Dockerfile").read_text(encoding="utf-8")
+    assert "python:3.12-slim" in text
+    assert 'CMD ["msty-admin-mcp"]' in text
+    dockerignore = (ROOT / ".dockerignore").read_text(encoding="utf-8")
+    for name in (".scratch", ".venv", "dist", ".pytest_cache"):
+        assert name in dockerignore

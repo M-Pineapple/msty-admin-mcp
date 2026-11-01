@@ -1,0 +1,17 @@
+.scratch
+.venv
+venv
+dist
+build
+.pytest_cache
+__pycache__
+*.pyc
+.git
+.eggs
+*.egg-info
+.coverage
+htmlcov
+tests
+.DS_Store
+.env
+.env.local

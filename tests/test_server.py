@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Tests for Msty Admin MCP Server v6.2.0
+Tests for Msty Admin MCP Server v6.2.1
 
 Run with: pytest tests/ -v
 """
@@ -31,11 +31,10 @@ from src.server import (
     DatabaseStats,
     MstyHealthReport,
     SERVER_VERSION,
-    detect_msty_installation,
-    get_server_status,
+    get_msty_installation,
+    get_status,
     list_configured_tools,
     read_msty_database,
-    analyse_msty_health,
     get_model_providers,
     list_personas,
     list_studio_catalogue,
@@ -43,8 +42,10 @@ from src.server import (
     suggest_persona_improvements,
     get_model_performance_metrics,
     export_workflow_pack,
-    detect_nexus,
+    get_nexus,
     evaluate_response_quality,
+    chat_with_model,
+    list_models,
 )
 
 
@@ -435,10 +436,10 @@ class TestInventoryAnalytics:
 @pytest.mark.usefixtures("fake_studio_db")
 class TestMCPTools:
     def test_server_version(self):
-        assert SERVER_VERSION == "6.2.0"
+        assert SERVER_VERSION == "6.2.1"
 
     def test_detect_msty_installation_returns_json(self):
-        data = json.loads(detect_msty_installation())
+        data = json.loads(get_msty_installation())
         assert "installed" in data or "found" in data
         assert "platform_info" in data
 
@@ -461,15 +462,39 @@ class TestMCPTools:
         assert "remote_providers" in data
 
     def test_analyse_msty_health_returns_json(self):
-        data = json.loads(analyse_msty_health())
+        data = json.loads(get_status(scope="install"))
         assert "overall_status" in data
         assert "recommendations" in data
 
     def test_get_server_status_returns_json(self):
-        data = json.loads(get_server_status())
-        assert data["server"]["version"] == "6.2.0"
+        data = json.loads(get_status(scope="server"))
+        assert data["server"]["version"] == "6.2.1"
         assert data["phases"]["phase_9_frontier"] == 1
-        assert data["tools_available"] >= 50
+        assert data["phases"]["phase_1_foundational"] == 5
+        assert data["phases"]["phase_3_services"] == 9
+        assert data["phases"]["phase_8_nexus"] == 3
+        assert data["tools_available"] == 54
+
+    def test_get_status_unknown_scope_lists_allowed(self):
+        data = json.loads(get_status(scope="nope"))
+        assert "error" in data
+        assert data["allowed"] == ["all", "server", "install", "services"]
+
+    def test_list_models_unknown_backend_lists_allowed(self):
+        data = json.loads(list_models(backend="nope"))
+        assert "error" in data
+        assert "local_ai" in data["allowed"]
+
+    def test_chat_with_model_unknown_backend_lists_allowed(self):
+        data = json.loads(
+            chat_with_model(
+                model="x",
+                messages=[{"role": "user", "content": "hi"}],
+                backend="nope",
+            )
+        )
+        assert "error" in data
+        assert data["allowed"] == ["local_ai", "mlx", "llamacpp"]
 
     def test_list_personas_json(self):
         data = json.loads(list_personas())
@@ -492,7 +517,7 @@ class TestMCPTools:
         assert data["format"] == "msty-admin-workflow-pack"
 
     def test_detect_nexus_json(self):
-        data = json.loads(detect_nexus())
+        data = json.loads(get_nexus())
         assert "found" in data
 
     def test_evaluate_response_quality(self):

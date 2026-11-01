@@ -2,7 +2,7 @@
 
 <img src="assets/logo.svg" alt="Msty Admin MCP logo" width="240"/>
 
-# Msty Admin MCP v6.2.0
+# Msty Admin MCP v6.2.1
 
 [![Licence: MIT](https://img.shields.io/github/license/M-Pineapple/msty-admin-mcp)](LICENSE)
 [![Python](https://img.shields.io/badge/Python-3.10+-3776AB?logo=python&logoColor=white)](https://www.python.org)
@@ -91,7 +91,7 @@ For this to work, the chat uses a small toolset holding only the Frontier helper
 
 ## What you can do
 
-Once the server is added to your AI app, ask as you normally would. You never need to name a tool, because the AI picks the right one. The groups below cover all 61 tools. The full names are in [Tools summary](#tools-summary-61-in-total).
+Once the server is added to your AI app, ask as you normally would. You never need to name a tool, because the AI picks the right one. The groups below cover all 54 tools. The full names are in [Tools summary](#tools-summary-54-in-total).
 
 ### Know your machine and pick a model
 
@@ -215,7 +215,7 @@ If you already have Python 3.10+ as `python3`, `python3 -m venv .venv` is enough
 
 If `pip install msty-admin-mcp` cannot find the package, install the release straight from GitHub:
 ```bash
-pip install "msty-admin-mcp @ git+https://github.com/M-Pineapple/msty-admin-mcp@v6.2.0"
+pip install "msty-admin-mcp @ git+https://github.com/M-Pineapple/msty-admin-mcp@v6.2.1"
 ```
 
 ### With HTTP Transport
@@ -321,14 +321,14 @@ Msty Studio Desktop
          ↓
 
 MCP Server (stdio / HTTP)
-├── Phase 1: Foundational (6)
+├── Phase 1: Foundational (5)
 ├── Phase 2: Configuration (5)
-├── Phase 3: Service Integration (14)
+├── Phase 3: Service Integration (9)
 ├── Phase 4: Intelligence (5)
 ├── Phase 5: Calibration (5)
 ├── Phase 6: Bloom Evaluation (6)
 ├── Phase 7: Studio Inventory (15)
-├── Phase 8: Nexus Bridge (4)
+├── Phase 8: Nexus Bridge (3)
 └── Phase 9: Frontier handoff (1)
 ```
 
@@ -340,7 +340,7 @@ A local model does the ordinary work. When a question is past it, that model cal
 
 Msty Studio has no hook API. `escalate_if_needed` and the "Local with frontier escalation" persona are the honest equivalent: the local model must emit a real tool call.
 
-Use a **separate one-tool server** for the local-model chat. The full admin server has 61 tools. A small model will call those other tools (GitHub, search, schema, and so on) instead of waiting for the answer.
+Use a **separate one-tool server** for the local-model chat. The full admin server has 54 tools. A small model will call those other tools (GitHub, search, schema, and so on) instead of waiting for the answer.
 
 ### Fresh install
 
@@ -391,16 +391,15 @@ The admin server still has the Studio inventory tools. Add the Frontier server a
 
 ---
 
-## Tools summary (61 in total)
+## Tools summary (54 in total)
 
-### Phase 1: Foundational (6)
-- `detect_msty_installation`: app, version, DB path, ports
+### Phase 1: Foundational (5)
+- `get_msty_installation`: app, version, DB path, ports
 - `read_msty_database`: `stats` / `tables` / read-only SQL
   - In read-only SQL, credential columns (key, token, secret, password, auth and header names, URL, config/JSON and command-line columns) always read as NULL. Secrets typed into arbitrary free-text columns, such as a chat message or a note, are out of scope for this tool.
 - `list_configured_tools`: Toolbox MCP tools
 - `get_model_providers`: services and Studio providers (keys redacted)
-- `analyse_msty_health`: install, DB and services
-- `get_server_status`: MCP status
+- `get_status`: MCP, install and local service health. `scope` is `all`, `server`, `install` or `services`
 
 ### Phase 2: Configuration (5)
 - `export_tool_config`: export a tool by name/id
@@ -409,17 +408,17 @@ The admin server still has the Studio inventory tools. Add the Frontier server a
 - `import_tool_config`: JSON pack for Toolbox. Never writes the Studio database
 - `import_studio_pack`: tools, toolsets and skills stay in the JSON pack. Personas and prompts need the env gate
 
-### Phase 3: Service Integration (14)
-- `get_service_status`, `list_available_models`, `query_local_ai_service` (allow-listed)
-- `chat_with_local_model`, `get_hardware_profile`, `recommend_model`
+### Phase 3: Service Integration (9)
+- `list_models`: Local AI, MLX, llama.cpp, Vibe and Nexus. `backend` defaults to `all`
+- `query_local_ai_service` (allow-listed)
+- `chat_with_model`: Local AI, MLX or llama.cpp. `backend` defaults to `local_ai`
+- `get_hardware_profile`, `recommend_model`
 - `install_model`, `set_model_settings`
-- `list_mlx_models`, `chat_with_mlx_model`
-- `list_llamacpp_models`, `chat_with_llamacpp_model`
 - `get_vibe_proxy_status`, `query_vibe_proxy`
 
 ### Phase 4: Intelligence (5)
 - `get_model_performance_metrics`: from Studio `insightsLanguageModelUsage`
-- `analyse_conversation_patterns`
+- `get_conversation_patterns`
 - `compare_model_responses`
 - `optimise_knowledge_stacks`: live Next Gen / draft / compose status
 - `suggest_persona_improvements`
@@ -440,8 +439,8 @@ The admin server still has the Studio inventory tools. Add the Frontier server a
 - `list_context_studio`, `list_agent_plans`
 - `get_studio_entity` (plural keys such as `personas`, plus singular aliases such as `persona`), `get_schema_migrations`, `export_workflow_pack`
 
-### Phase 8: Nexus Bridge (4)
-- `detect_nexus`, `list_nexus_models`, `query_nexus`, `get_insights_usage`
+### Phase 8: Nexus Bridge (3)
+- `get_nexus`, `query_nexus`, `get_insights_usage`
 
 ### Phase 9: Frontier handoff (1)
 - `ask_frontier`: hand one question to Cursor (default), Grok, or Claude and return the answer in the Msty chat. Use the one-tool server (`msty-frontier` or `python -m src.frontier_main`) for a local-model chat. See [Hybrid local model and Cursor agent](#hybrid-local-model-and-cursor-agent).
@@ -481,7 +480,7 @@ v6 ships unit tests for path resolution, read-only SQL guards, redaction, invent
 **A**: Inventory and analytics stay read-only. Write tools always save a JSON pack under `~/.msty-admin/imports/`. Tools, toolsets and skills are import-file only. Personas and prompts insert into Studio SQLite only with `confirm=true` and `MSTY_ALLOW_STUDIO_WRITES=1` in the MCP server environment, after a timestamped SQLite backup that includes WAL, and they refuse while Msty Studio is running against the live database. Quit Studio first, or import the JSON pack in Persona Studio or Toolbox.
 
 ### Q: What is the Nexus integration?
-**A**: [Msty Nexus](https://msty.ai/nexus/) is the local runtime/gateway. Phase 8 detects it and lists models via its OpenAI-compatible endpoint (`MSTY_NEXUS_PORT`).
+**A**: [Msty Nexus](https://msty.ai/nexus/) is the local runtime/gateway. `get_nexus` detects it. `list_models` with `backend=nexus` lists models on its OpenAI-compatible endpoint (`MSTY_NEXUS_PORT`).
 
 ---
 

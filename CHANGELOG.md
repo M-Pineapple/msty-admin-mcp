@@ -2,6 +2,44 @@
 
 ## Unreleased
 
+## v6.2.1 - 2026-11-02
+
+Glama tool-quality pass. 61 tools become 54.
+
+### Breaking changes
+
+| Old name | New name |
+|---|---|
+| `get_server_status` | `get_status(scope=server)` |
+| `analyse_msty_health` | `get_status(scope=install)` |
+| `get_service_status` | `get_status(scope=services)` |
+| Combined health call | `get_status(scope=all)` (default) |
+| `chat_with_local_model` | `chat_with_model(backend=local_ai)` |
+| `chat_with_mlx_model` | `chat_with_model(backend=mlx)` |
+| `chat_with_llamacpp_model` | `chat_with_model(backend=llamacpp)` |
+| `list_available_models` | `list_models(backend=all)` |
+| `list_mlx_models` | `list_models(backend=mlx)` |
+| `list_llamacpp_models` | `list_models(backend=llamacpp)` |
+| `list_nexus_models` | `list_models(backend=nexus)` |
+| `detect_msty_installation` | `get_msty_installation` |
+| `detect_nexus` | `get_nexus` |
+| `analyse_conversation_patterns` | `get_conversation_patterns` |
+
+`ask_frontier` is unchanged.
+
+### Added
+
+- MCP `ToolAnnotations` (`readOnlyHint`, `destructiveHint`, `idempotentHint`, `openWorldHint`, `title`) on every tool.
+- TDQS-style descriptions and a description on every parameter.
+- `glama.json` maintainer record and a `python:3.12-slim` Dockerfile for Glama Firecracker builds.
+- Persona `colorIcon` allow-list (`{"name":"tabler:[a-z0-9-]{1,64}"}`). Other values fall back to `tabler:user-scan`.
+- Length caps on persona name (100), title (100), description (500), system prompt (20000) and prompt text (20000). Over-length fields are refused with a clear error.
+- `install_model` pulls only bare Ollama names (`registry.ollama.ai`) and `hf.co/` paths. Other hosts are refused.
+
+### Changed
+
+- README tool list, architecture phase counts and Git install pin match 54 tools and v6.2.1.
+
 ## v6.2.0 - 2026-11-01
 
 Hybrid local and cloud tools on top of 6.1.5.

@@ -180,7 +180,9 @@ from src.install import (
     pull_model,
     pull_payload,
     validate_model_name,
+    validate_pull_source,
 )
+from src.tooling import DEFAULT_COLOR_ICON, sanitise_color_icon
 from src.paths import is_process_running
 from src import writes
 from src.frontier import ask_claude, ask_frontier, ask_grok, resolve_provider
@@ -841,6 +843,46 @@ class TestWrites:
         assert sql_datetime.match(version["createdAt"])
         assert any("partialModelInfo left null" in note for note in result.get("notes") or [])
 
+    def test_persona_color_icon_falls_back_to_tabler_allow_list(
+        self, admin_home, studio_fixture, monkeypatch
+    ):
+        monkeypatch.setenv("MSTY_ALLOW_STUDIO_WRITES", "1")
+        pack = writes.persona_pack("Icon Persona", "Be brief.", "llama3.2:3b")
+        pack["personas"][0]["colorIcon"] = '{"name":"mdi:robot","extra":true}'
+        result = writes.apply_pack(
+            pack,
+            confirm=True,
+            database_path=str(studio_fixture),
+            imports_root=admin_home / "imports",
+            backup_root=admin_home / "backups",
+        )
+        assert result["wrote"] is True
+        conn = sqlite3.connect(str(studio_fixture))
+        color = conn.execute("SELECT colorIcon FROM personas").fetchone()[0]
+        conn.close()
+        assert color == DEFAULT_COLOR_ICON
+
+    def test_persona_name_over_length_is_refused(self, admin_home):
+        result = writes.apply_pack(
+            writes.persona_pack("X" * 101, "Be brief.", "llama3.2:3b"),
+            confirm=False,
+            imports_root=admin_home / "imports",
+        )
+        assert result["wrote"] is False
+        assert result["status"] == "refused"
+        assert "persona name" in result["error"]
+        assert "100" in result["error"]
+
+    def test_prompt_text_over_length_is_refused(self, admin_home):
+        result = writes.apply_pack(
+            {"prompts": [{"title": "Long", "text": "y" * 20001}]},
+            confirm=False,
+            imports_root=admin_home / "imports",
+        )
+        assert result["wrote"] is False
+        assert result["status"] == "refused"
+        assert "prompt text" in result["error"]
+
     def test_persona_insert_ignores_caller_id_and_partial_model_info(
         self, admin_home, studio_fixture, monkeypatch
     ):
@@ -1309,15 +1351,46 @@ class TestBloom:
 
 class TestToolCount:
     def test_decorator_count_matches_constant(self):
+        import asyncio
+
+        from src.server import mcp
+
         text = Path("src/server.py").read_text(encoding="utf-8")
-        assert text.count("@mcp.tool()") == TOOL_COUNT
-        assert TOOL_COUNT == 61
+        assert text.count("@mcp.tool(") == TOOL_COUNT
+        assert TOOL_COUNT == 54
+        tools = asyncio.run(mcp.list_tools())
+        assert len(tools) == TOOL_COUNT
+        names = {tool.name for tool in tools}
+        assert "get_status" in names
+        assert "chat_with_model" in names
+        assert "list_models" in names
+        assert "get_msty_installation" in names
+        assert "get_nexus" in names
+        assert "get_conversation_patterns" in names
+        assert "ask_frontier" in names
+        gone = {
+            "get_service_status",
+            "analyse_msty_health",
+            "get_server_status",
+            "chat_with_local_model",
+            "chat_with_mlx_model",
+            "chat_with_llamacpp_model",
+            "list_available_models",
+            "list_mlx_models",
+            "list_llamacpp_models",
+            "list_nexus_models",
+            "detect_msty_installation",
+            "detect_nexus",
+            "analyse_conversation_patterns",
+        }
+        assert names.isdisjoint(gone)
 
     def test_readme_lists_every_tool(self):
-        import re
+        import asyncio
 
-        src = Path("src/server.py").read_text(encoding="utf-8")
-        names = re.findall(r"@mcp\.tool\(\)\s*\ndef (\w+)", src)
+        from src.server import mcp
+
+        names = [tool.name for tool in asyncio.run(mcp.list_tools())]
         readme = Path("README.md").read_text(encoding="utf-8")
         missing = [name for name in names if f"`{name}`" not in readme]
         assert names

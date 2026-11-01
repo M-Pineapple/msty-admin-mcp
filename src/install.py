@@ -70,6 +70,33 @@ def leftover_scheme(name: str) -> bool:
     return "://" in _strip_uri_schemes((name or "").strip().lower())
 
 
+def validate_pull_source(name: str) -> Optional[str]:
+    """Refuse pull names that point at a host other than Ollama or hf.co/.
+
+    Bare names (llama3.2:3b) and registry.ollama.ai/... are allowed. Hugging
+    Face paths must start with hf.co/. Any other dotted first path segment is
+    treated as a host and refused.
+    """
+    text = _strip_uri_schemes((name or "").strip().lower())
+    if not text:
+        return "model is empty"
+    if text.startswith("hf.co/"):
+        rest = text[6:]
+        if not rest or rest.startswith("/") or ".." in rest:
+            return "hf.co/ model path is empty or unsafe"
+        return None
+    if _REGISTRY_HOST_RE.match(text):
+        return None
+    if "/" in text:
+        host = text.split("/", 1)[0]
+        if "." in host:
+            return (
+                "install_model only pulls bare Ollama names (registry.ollama.ai) "
+                f"or hf.co/ paths. Refused host {host!r}."
+            )
+    return None
+
+
 def normalise_model_name(name: str) -> str:
     """Lowercase, strip scheme and registry/library prefixes, add :latest when untagged."""
     text = _strip_uri_schemes((name or "").strip().lower())
@@ -204,6 +231,9 @@ def pull_model(
     name_error = validate_model_name(cleaned, "model")
     if name_error:
         return {"success": False, "error": name_error, "wrote": False}
+    source_error = validate_pull_source(cleaned)
+    if source_error:
+        return {"success": False, "error": source_error, "wrote": False}
     if service.strip().lower() in {"mlx", "llamacpp", "llama.cpp"}:
         return {
             "success": False,

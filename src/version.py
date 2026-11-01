@@ -10,7 +10,7 @@ def package_version() -> str:
 
     Installed wheels use importlib.metadata. A source checkout that is not
     installed yet reads ``version`` from pyproject.toml so FastMCP initialize
-    and ``get_server_status`` stay in lock-step without a second literal.
+    and ``get_status`` stay in lock-step without a second literal.
     """
     try:
         from importlib.metadata import version

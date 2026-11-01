@@ -484,7 +484,7 @@ Or add it to your Claude Desktop MCP configuration:
 **Fix**: Run a quick chat with the model first to load it into memory:
 
 ```
-chat_with_local_model(model="qwen2.5:7b", messages=[{"role": "user", "content": "hello"}])
+chat_with_model(model="qwen2.5:7b", messages=[{"role": "user", "content": "hello"}], backend="local_ai")
 ```
 
 Then run the evaluation.
