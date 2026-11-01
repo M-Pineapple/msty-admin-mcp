@@ -6,7 +6,7 @@ Hybrid local and cloud tools on top of 6.1.5. Version number is unchanged until 
 
 ### Security
 
-- Tools and toolsets are never inserted into Studio SQLite from MCP. `import_tool_config` and `import_studio_pack` save those kinds as a JSON pack for Toolbox import.
+- Tools, toolsets and skills are never inserted into Studio SQLite from MCP. `import_tool_config` and `import_studio_pack` save those kinds as a JSON pack for Toolbox import.
 - Personas, prompts and skills need both `confirm=true` and operator env `MSTY_ALLOW_STUDIO_WRITES=1` (off by default, not a tool argument).
 - Tool configs with `command`, `args` or `env` are refused for SQLite apply and flagged as running a program on your machine.
 - `is_process_running` fails closed when psutil is missing or errors, and matches the live `MstyStudio` process name.
@@ -14,6 +14,10 @@ Hybrid local and cloud tools on top of 6.1.5. Version number is unchanged until 
 - Sidecar dirs are `0700`. Session files, import packs, DB backups and Bloom history are written `0600` with `O_NOFOLLOW`.
 - `query_local_ai_service` sends the allow-list's normalised method.
 - Bloom subprocess gets a minimal environment and its temp YAML is deleted.
+- Model names are normalised (strip `registry.ollama.ai/` and `library/`, add `:latest` when untagged) before the create existence check. Names with `..`, a leading `/` or `~`, or a local-path shape are refused.
+- Database backups use `sqlite3.Connection.backup()`, so WAL contents are included, written `0600`.
+- Skills are JSON-pack only. Free-form skill content can carry `command`, `args` or `env`.
+- Hardware binaries try known absolute paths first, then `shutil.which`.
 
 ### Added
 
@@ -26,7 +30,7 @@ Hybrid local and cloud tools on top of 6.1.5. Version number is unchanged until 
 
 ### Changed
 
-- `generate_persona` and `import_studio_pack` insert personas, prompts and skills only with `confirm=true` and `MSTY_ALLOW_STUDIO_WRITES=1`. `import_tool_config` is JSON-pack only. JSON packs always land under `~/.msty-admin/imports/`.
+- `generate_persona` and `import_studio_pack` insert personas and prompts only with `confirm=true` and `MSTY_ALLOW_STUDIO_WRITES=1`. Tools, toolsets and skills are JSON-pack only. JSON packs always land under `~/.msty-admin/imports/`.
 - `query_local_ai_service` is allow-listed. Pull and create are no longer a generic side door.
 - README hybrid section and tool list match the 61 tools that exist.
 

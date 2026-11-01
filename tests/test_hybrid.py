@@ -10,9 +10,16 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from src.hardware import catalog, detect_hardware
+from src.hardware import _binary, catalog, detect_hardware
 from src.hardware.catalog import memory_budget_gb, recommend
-from src.install import build_modelfile, create_variant, passthrough_allowed, pull_model
+from src.install import (
+    build_modelfile,
+    create_variant,
+    looks_like_local_path,
+    normalise_model_name,
+    passthrough_allowed,
+    pull_model,
+)
 from src.paths import is_process_running
 from src import writes
 from src.frontier import ask_claude, ask_frontier, ask_grok, resolve_provider
@@ -153,6 +160,16 @@ class TestHardware:
         assert profile["ram_gb"] == 36.0
         assert profile["cpu_cores_physical"] == 14
 
+    def test_binary_prefers_known_absolute_path(self, monkeypatch):
+        monkeypatch.setattr(
+            "src.hardware.os.path.isfile", lambda path: path == "/usr/sbin/sysctl"
+        )
+        monkeypatch.setattr("src.hardware.os.access", lambda path, mode: True)
+        monkeypatch.setattr(
+            "src.hardware.shutil.which", lambda name: "/opt/homebrew/bin/sysctl"
+        )
+        assert _binary("sysctl") == "/usr/sbin/sysctl"
+
     def test_budget_unified_and_discrete(self):
         assert memory_budget_gb({"ram_gb": 36, "unified_memory": True}) == 21.6
         assert memory_budget_gb({"ram_gb": 32, "vram_gb": 16, "unified_memory": False}) == 13.6
@@ -274,6 +291,76 @@ class TestInstallAndAllowList:
         assert "already exists" in result["error"]
         assert "/api/create" not in calls
 
+    def test_normalise_strips_registry_and_library_and_adds_latest(self):
+        assert normalise_model_name("registry.ollama.ai/library/llama-tuned") == "llama-tuned:latest"
+        assert normalise_model_name("library/llama-tuned") == "llama-tuned:latest"
+        assert normalise_model_name("llama-tuned") == "llama-tuned:latest"
+        assert normalise_model_name("llama3.2:3b") == "llama3.2:3b"
+
+    def test_create_variant_refuses_registry_name_matching_existing(self):
+        calls = []
+
+        def fake_request(endpoint, port=None, method="GET", data=None, timeout=10):
+            calls.append(endpoint)
+            if endpoint == "/api/tags":
+                return {"success": True, "data": {"models": [{"name": "llama-tuned:latest"}]}}
+            return {"success": False}
+
+        result = create_variant(
+            "llama3.2:3b",
+            "registry.ollama.ai/library/llama-tuned",
+            confirm=True,
+            request_fn=fake_request,
+        )
+        assert result["wrote"] is False
+        assert "already exists" in result["error"]
+        assert "/api/create" not in calls
+
+    def test_create_variant_refuses_library_prefix_matching_existing(self):
+        def fake_request(endpoint, port=None, method="GET", data=None, timeout=10):
+            if endpoint == "/api/tags":
+                return {"success": True, "data": {"models": [{"name": "llama-tuned"}]}}
+            return {"success": False}
+
+        result = create_variant(
+            "llama3.2:3b", "library/llama-tuned", confirm=True, request_fn=fake_request
+        )
+        assert result["wrote"] is False
+        assert "already exists" in result["error"]
+
+    def test_create_variant_refuses_untagged_when_latest_exists(self):
+        def fake_request(endpoint, port=None, method="GET", data=None, timeout=10):
+            if endpoint == "/api/tags":
+                return {"success": True, "data": {"models": [{"name": "llama-tuned:latest"}]}}
+            return {"success": False}
+
+        result = create_variant(
+            "llama3.2:3b", "llama-tuned", confirm=True, request_fn=fake_request
+        )
+        assert result["wrote"] is False
+        assert result["normalised_name"] == "llama-tuned:latest"
+
+    def test_rejects_dotdot_in_model_name(self):
+        assert looks_like_local_path("../evil")
+        result = create_variant("llama3.2:3b", "foo/../bar", confirm=False)
+        assert result["success"] is False
+        assert "path" in result["error"]
+
+    def test_rejects_leading_slash_in_model_name(self):
+        result = create_variant("/tmp/model", "ok-name", confirm=False)
+        assert result["success"] is False
+        assert "path" in result["error"]
+
+    def test_rejects_leading_tilde_in_model_name(self):
+        result = create_variant("~/models/llama", "ok-name", confirm=False)
+        assert result["success"] is False
+        assert "path" in result["error"]
+
+    def test_rejects_local_gguf_path_in_model_name(self):
+        result = create_variant("./weights.gguf", "ok-name", confirm=False)
+        assert result["success"] is False
+        assert "path" in result["error"]
+
     def test_query_local_ai_sends_normalised_method(self, monkeypatch):
         captured = {}
 
@@ -362,7 +449,7 @@ class TestWrites:
         assert conn.execute("SELECT name FROM personas").fetchone()[0] == "Research"
         assert conn.execute("SELECT COUNT(*) FROM tools").fetchone()[0] == 0
         assert conn.execute("SELECT name FROM promptsLibraryPrompts").fetchone()[0] == "Summarise"
-        assert conn.execute("SELECT name FROM skill_preferences").fetchone()[0] == "cite"
+        assert conn.execute("SELECT COUNT(*) FROM skill_preferences").fetchone()[0] == 0
         assert conn.execute("SELECT COUNT(*) FROM toolsets").fetchone()[0] == 0
         conn.close()
 
@@ -388,6 +475,62 @@ class TestWrites:
         conn = sqlite3.connect(str(studio_fixture))
         assert conn.execute("SELECT COUNT(*) FROM tools").fetchone()[0] == 0
         conn.close()
+
+    def test_skill_with_command_is_refused(self, admin_home, studio_fixture, monkeypatch):
+        monkeypatch.setenv("MSTY_ALLOW_STUDIO_WRITES", "1")
+        result = writes.apply_pack(
+            {
+                "skills": [
+                    {
+                        "name": "shell",
+                        "content": {"command": "/bin/sh", "args": ["-c", "id"]},
+                    }
+                ]
+            },
+            confirm=True,
+            database_path=str(studio_fixture),
+            imports_root=admin_home / "imports",
+            backup_root=admin_home / "backups",
+        )
+        assert result["wrote"] is False
+        assert result["status"] == "refused"
+        assert "runs a program on your machine" in result["error"]
+        conn = sqlite3.connect(str(studio_fixture))
+        assert conn.execute("SELECT COUNT(*) FROM skill_preferences").fetchone()[0] == 0
+        conn.close()
+
+    def test_skills_never_reach_db_even_with_env(self, admin_home, studio_fixture, monkeypatch):
+        monkeypatch.setenv("MSTY_ALLOW_STUDIO_WRITES", "1")
+        result = writes.apply_pack(
+            {"skills": [{"name": "cite", "content": "Cite sources."}]},
+            confirm=True,
+            database_path=str(studio_fixture),
+            imports_root=admin_home / "imports",
+            backup_root=admin_home / "backups",
+        )
+        assert result["wrote"] is False
+        conn = sqlite3.connect(str(studio_fixture))
+        assert conn.execute("SELECT COUNT(*) FROM skill_preferences").fetchone()[0] == 0
+        conn.close()
+
+    def test_backup_includes_wal_row(self, tmp_path):
+        db_path = tmp_path / "studio.db"
+        conn = sqlite3.connect(str(db_path))
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA wal_autocheckpoint=0")
+        conn.execute("CREATE TABLE items (id TEXT, name TEXT)")
+        conn.commit()
+        conn.execute("INSERT INTO items VALUES ('1', 'wal-row')")
+        conn.commit()
+        wal = Path(str(db_path) + "-wal")
+        assert wal.exists()
+        dest = writes.backup_database(db_path, dest_dir=tmp_path / "backups")
+        assert dest.stat().st_mode & 0o077 == 0
+        check = sqlite3.connect(f"file:{dest}?mode=ro", uri=True)
+        names = [row[0] for row in check.execute("SELECT name FROM items")]
+        check.close()
+        conn.close()
+        assert "wal-row" in names
 
     def test_refuses_when_studio_holds_live_db(self, admin_home, studio_fixture, monkeypatch):
         monkeypatch.setenv("MSTY_ALLOW_STUDIO_WRITES", "1")
@@ -562,3 +705,14 @@ class TestToolCount:
         text = Path("src/server.py").read_text(encoding="utf-8")
         assert text.count("@mcp.tool()") == TOOL_COUNT
         assert TOOL_COUNT == 61
+
+    def test_readme_lists_every_tool(self):
+        import re
+
+        src = Path("src/server.py").read_text(encoding="utf-8")
+        names = re.findall(r"@mcp\.tool\(\)\s*\ndef (\w+)", src)
+        readme = Path("README.md").read_text(encoding="utf-8")
+        missing = [name for name in names if f"`{name}`" not in readme]
+        assert names
+        assert len(names) == TOOL_COUNT
+        assert missing == []

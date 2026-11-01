@@ -1,7 +1,7 @@
 """Confirmed Studio writes: JSON pack always. SQLite only for safe kinds.
 
-Tools and toolsets are never inserted into Studio SQLite. Personas, prompts
-and skills need ``confirm=true`` and ``MSTY_ALLOW_STUDIO_WRITES=1`` in the
+Tools, toolsets and skills are never inserted into Studio SQLite. Personas
+and prompts need ``confirm=true`` and ``MSTY_ALLOW_STUDIO_WRITES=1`` in the
 server environment. MCP tools must not expose ``database_path``.
 """
 
@@ -27,9 +27,10 @@ TABLE_FOR_KIND = {
 }
 
 # MCP never writes these tables. Import the JSON pack in Toolbox.
-PACK_ONLY_KINDS = frozenset({"tools", "toolsets"})
-DB_KINDS = frozenset({"personas", "prompts", "skills"})
-LAUNCH_KEYS = frozenset({"command", "args", "env"})
+# Skills use free-form content that can carry command/args/env, so they stay pack-only.
+PACK_ONLY_KINDS = frozenset({"tools", "toolsets", "skills"})
+DB_KINDS = frozenset({"personas", "prompts"})
+LAUNCH_KEYS = frozenset({"command", "args", "env", "executable", "bin", "script", "stdio", "cmd"})
 WRITES_ENV = "MSTY_ALLOW_STUDIO_WRITES"
 
 REQUIRED_COLUMNS = {
@@ -40,12 +41,12 @@ REQUIRED_COLUMNS = {
 ENV_OFF_NOTE = (
     "Studio database writes are off. Set MSTY_ALLOW_STUDIO_WRITES=1 in the MCP "
     "server environment (not as a tool argument), then pass confirm=true. "
-    "Tools and toolsets are never written to the database. Import the JSON pack "
+    "Tools, toolsets and skills are never written to the database. Import the JSON pack "
     "in Toolbox."
 )
 LAUNCH_FLAG = "runs a program on your machine, review before importing"
 PACK_ONLY_NOTE = (
-    "Tools and toolsets are saved as a JSON pack only. Import them in Msty Toolbox. "
+    "Tools, toolsets and skills are saved as a JSON pack only. Import them in Msty Toolbox. "
     "They are never written to the Studio database from this MCP."
 )
 
@@ -119,11 +120,24 @@ def studio_holds_live_database(path: Path) -> bool:
 
 
 def backup_database(database_path: Path, dest_dir: Optional[Path] = None) -> Path:
+    """Copy the logical SQLite database, including WAL, into a 0600 file."""
     folder = dest_dir or backups_dir()
     secure_mkdir(folder)
     dest = folder / f"{database_path.name}-{_now_stamp()}.bak"
-    data = database_path.read_bytes()
-    secure_write(dest, data)
+    secure_write(dest, b"")
+    src = sqlite3.connect(f"file:{database_path}?mode=ro", uri=True)
+    try:
+        dst = sqlite3.connect(str(dest))
+        try:
+            src.backup(dst)
+        finally:
+            dst.close()
+    finally:
+        src.close()
+    try:
+        os.chmod(dest, 0o600)
+    except OSError:
+        pass
     return dest
 
 
@@ -210,8 +224,14 @@ def apply_pack(
     backup_root: Optional[Path] = None,
     imports_root: Optional[Path] = None,
 ) -> Dict[str, Any]:
-    """Save a JSON pack. SQLite inserts only personas, prompts and skills."""
-    launch_hits = launch_keys_in({"tools": pack.get("tools"), "toolsets": pack.get("toolsets")})
+    """Save a JSON pack. SQLite inserts only personas and prompts."""
+    launch_hits = launch_keys_in(
+        {
+            "tools": pack.get("tools"),
+            "toolsets": pack.get("toolsets"),
+            "skills": pack.get("skills"),
+        }
+    )
     launch_risk = []
     if launch_hits:
         unique = sorted(set(k.lower() for k in launch_hits))
@@ -240,7 +260,7 @@ def apply_pack(
         )
     if not confirm:
         result["note"] = (
-            "JSON pack saved. Personas, prompts and skills insert into Studio only with "
+            "JSON pack saved. Personas and prompts insert into Studio only with "
             "confirm=true and MSTY_ALLOW_STUDIO_WRITES=1 in the server environment. "
             + PACK_ONLY_NOTE
         )

@@ -28,12 +28,12 @@ _KNOWN_BINS = {
 
 
 def _binary(name: str) -> str:
-    found = shutil.which(name)
-    if found:
-        return found
     for candidate in _KNOWN_BINS.get(name, ()):
         if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
             return candidate
+    found = shutil.which(name)
+    if found:
+        return found
     return name
 
 

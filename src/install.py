@@ -36,6 +36,44 @@ PASSTHROUGH_POST = frozenset(
 _PULL_HINT = "Use install_model with confirm=true to pull a model."
 _CREATE_HINT = "Use set_model_settings with confirm=true to create a tuned variant."
 MODEL_NAME_RE = re.compile(r"^[A-Za-z0-9._:/-]+$")
+_REGISTRY_PREFIXES = (
+    "https://registry.ollama.ai/",
+    "http://registry.ollama.ai/",
+    "registry.ollama.ai/",
+)
+_LIBRARY_PREFIX = "library/"
+_LOCAL_SUFFIXES = (".gguf", ".bin", ".pt", ".pth", ".safetensors")
+
+
+def looks_like_local_path(name: str) -> bool:
+    text = (name or "").strip()
+    if not text:
+        return False
+    if ".." in text:
+        return True
+    if text.startswith("/") or text.startswith("~") or text.startswith("./"):
+        return True
+    if "\\" in text or text.lower().startswith("file:"):
+        return True
+    lowered = text.lower()
+    return any(lowered.endswith(suffix) for suffix in _LOCAL_SUFFIXES)
+
+
+def normalise_model_name(name: str) -> str:
+    """Strip registry/library prefixes and add :latest when the name has no tag."""
+    text = (name or "").strip()
+    lowered = text.lower()
+    for prefix in _REGISTRY_PREFIXES:
+        if lowered.startswith(prefix):
+            text = text[len(prefix) :]
+            lowered = text.lower()
+            break
+    if lowered.startswith(_LIBRARY_PREFIX):
+        text = text[len(_LIBRARY_PREFIX) :]
+    last = text.rsplit("/", 1)[-1]
+    if text and ":" not in last:
+        text = f"{text}:latest"
+    return text
 
 
 def validate_model_name(name: str, field: str = "model") -> Optional[str]:
@@ -43,6 +81,11 @@ def validate_model_name(name: str, field: str = "model") -> Optional[str]:
     cleaned = (name or "").strip()
     if not cleaned:
         return f"{field} is empty"
+    if looks_like_local_path(cleaned):
+        return (
+            f"{field} looks like a local path. Use a model name such as llama3.2:3b, "
+            "not a filesystem path, '..', or a leading '/' or '~'."
+        )
     if not MODEL_NAME_RE.fullmatch(cleaned):
         return (
             f"{field} must match {MODEL_NAME_RE.pattern} "
@@ -125,12 +168,12 @@ def _tags(port: int, request_fn: RequestFn) -> list:
 
 
 def _name_present(name: str, installed: list) -> bool:
-    needle = name.strip()
+    needle = normalise_model_name(name)
     for item in installed:
         text = str(item).strip()
         if not text:
             continue
-        if text == needle or text.startswith(needle + ":") or needle.startswith(text + ":"):
+        if normalise_model_name(text) == needle:
             return True
     return False
 
@@ -270,15 +313,17 @@ def create_variant(
                 "overwriting an existing model"
             ),
         }
+    variant_key = normalise_model_name(variant)
     if _name_present(variant, installed):
         return {
             "success": False,
             "wrote": False,
             "base_model": base,
             "variant_name": variant,
+            "normalised_name": variant_key,
             "error": (
-                f"variant_name {variant!r} already exists in /api/tags. "
-                "This tool never overwrites an existing model."
+                f"variant_name {variant!r} (normalised {variant_key!r}) already exists "
+                "in /api/tags. This tool never overwrites an existing model."
             ),
             "installed": installed,
         }

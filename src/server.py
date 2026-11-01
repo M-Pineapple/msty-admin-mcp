@@ -325,7 +325,7 @@ def generate_persona(name: str, system_prompt: str, model: str, confirm: bool = 
         result["import_hint"] = (
             "JSON pack saved under ~/.msty-admin/imports/. "
             "SQLite insert needs confirm=true and MSTY_ALLOW_STUDIO_WRITES=1 in the server "
-            "environment. Or import the pack in Persona Studio."
+            "environment. Skills stay in the JSON pack. Or import the pack in Persona Studio."
         )
     return _json(result)
 
@@ -345,9 +345,9 @@ def import_tool_config(tool_data: Dict[str, Any], confirm: bool = False) -> str:
 
 @mcp.tool()
 def import_studio_pack(pack: Dict[str, Any], confirm: bool = False) -> str:
-    """Save a Studio pack as JSON. Tools and toolsets are never inserted into SQLite.
+    """Save a Studio pack as JSON. Tools, toolsets and skills are never inserted into SQLite.
 
-    Personas, prompts and skills insert only with confirm=true and
+    Personas and prompts insert only with confirm=true and
     MSTY_ALLOW_STUDIO_WRITES=1, after a timestamped backup, and only when Studio
     is not holding the live database.
     """
