@@ -807,6 +807,7 @@ class TestWrites:
         assert persona["name"] == "Fixture Persona"
         assert persona["folderId"] == writes.ORPHANAGE_FOLDER_ID
         assert persona["colorIcon"] == '{"name":"tabler:user-scan"}'
+        assert persona["description"] is None
         assert persona["extras"] == gold_extras
         assert persona["partialSelectableAttachments"] == "[]"
         assert persona["partialModelInfo"] is None
@@ -824,7 +825,8 @@ class TestWrites:
         assert version["versionNumber"] == 1
         assert version["name"] == "Fixture Persona"
         assert json.loads(version["systemPrompt"]) == prompt_blob
-        assert version["colorIcon"] == persona["colorIcon"]
+        assert version["colorIcon"] is None
+        assert version["description"] is None
         assert version["extras"] == gold_extras
         assert version["partialSelectableAttachments"] == "[]"
         assert version["tags"] == "[]"
@@ -903,6 +905,37 @@ class TestWrites:
         conn.close()
         parsed = json.loads(blob)
         assert parsed == {"text": "You replace.", "mode": "replace"}
+
+    def test_persona_description_stays_off_the_version(
+        self, admin_home, studio_fixture, monkeypatch
+    ):
+        monkeypatch.setenv("MSTY_ALLOW_STUDIO_WRITES", "1")
+        pack = {
+            "personas": [
+                {
+                    "name": "Described",
+                    "systemPrompt": "Hi.",
+                    "model": "llama3.2:3b",
+                    "description": "A short note.",
+                }
+            ]
+        }
+        result = writes.apply_pack(
+            pack,
+            confirm=True,
+            database_path=str(studio_fixture),
+            imports_root=admin_home / "imports",
+            backup_root=admin_home / "backups",
+        )
+        assert result["wrote"] is True
+        conn = sqlite3.connect(str(studio_fixture))
+        persona_desc = conn.execute("SELECT description FROM personas").fetchone()[0]
+        version_desc = conn.execute(
+            "SELECT description FROM personaVersions"
+        ).fetchone()[0]
+        conn.close()
+        assert persona_desc == "A short note."
+        assert version_desc is None
 
     def test_duplicate_persona_name_is_refused(self, admin_home, studio_fixture, monkeypatch):
         monkeypatch.setenv("MSTY_ALLOW_STUDIO_WRITES", "1")
@@ -1053,8 +1086,14 @@ class TestWrites:
         assert result["wrote"] is True
         conn = sqlite3.connect(str(studio_fixture))
         info = conn.execute("SELECT partialModelInfo FROM personas").fetchone()[0]
+        version_info = conn.execute(
+            "SELECT partialModelInfo, colorIcon, description FROM personaVersions"
+        ).fetchone()
         conn.close()
         assert json.loads(info) == {"id": "llama3.2:3b", "providerId": "prov-1"}
+        assert version_info[0] is None
+        assert version_info[1] is None
+        assert version_info[2] is None
 
     def test_pack_names_are_unique_within_the_same_second(
         self, admin_home, studio_fixture

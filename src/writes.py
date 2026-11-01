@@ -394,23 +394,23 @@ def _insert_persona(
         "extras": extras,
         "activeVersionId": version_id,
         "createdAt": created,
-        "description": item.get("description"),
         "partialModelInfo": partial_text,
         "partialSelectableAttachments": DEFAULT_ATTACHMENTS,
     }
+    description = item.get("description")
+    if isinstance(description, str) and description.strip():
+        persona_row["description"] = description.strip()
     insert_row(conn, "personas", _row_for_columns(persona_row, columns))
     if _table_exists(conn, "personaVersions"):
         version_columns = table_columns(conn, "personaVersions")
+        # Gold Studio 2.9.12 row: name is NOT NULL; remaining unlisted columns stay NULL.
         version_row = {
             "id": version_id,
             "personaId": persona_id,
             "versionNumber": 1,
             "name": name,
             "systemPrompt": system_blob,
-            "colorIcon": color,
             "extras": extras,
-            "partialModelInfo": partial_text,
-            "description": item.get("description"),
             "createdAt": created,
             "partialSelectableAttachments": DEFAULT_ATTACHMENTS,
             "tags": DEFAULT_TAGS,
@@ -676,7 +676,6 @@ def persona_pack(name: str, system_prompt: str, model: str) -> Dict[str, Any]:
                 "name": name,
                 "systemPrompt": system_prompt,
                 "model": model,
-                "description": f"Generated persona for {model}",
             }
         ]
     }
