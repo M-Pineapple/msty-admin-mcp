@@ -19,19 +19,28 @@
 
 ## What this does
 
-Msty Studio lets you run AI models on your own Mac. Msty Admin MCP connects that setup to an AI app that supports MCP, such as Claude Desktop or Cursor. That AI can size your machine, recommend and install a local model that fits, test it, write personas and prompts into Studio when you allow it, and keep an eye on usage, cost and health. Tools, toolsets and skills are saved as a JSON pack for Toolbox import. A separate small server, Frontier, lets a local model in a Msty chat pass a question it cannot handle to Cursor, Grok, or Claude, and the answer comes back into the same chat.
+Msty Studio lets you run AI models privately on your own Mac. Msty Admin MCP lets the AI app you already use, such as Claude Desktop or Cursor, look after that setup for you. You ask in plain words, and it does the technical work.
 
-**What it changes, in brief.** Inventory and analytics stay read only. Studio SQLite writes need `confirm=true` and `MSTY_ALLOW_STUDIO_WRITES=1` in the server environment. Tools, toolsets and skills never go into SQLite from this MCP. Keys, tokens and passwords are redacted. Details are in [Security and data access](#security-and-data-access).
+- **Picks the right model for your Mac.** It checks your chip and memory and suggests a local model that will run well, not one that grinds to a halt.
+- **Installs and tunes it.** It downloads the model and can make a tuned copy, for example a calmer, more precise version with a lower temperature and its own instructions.
+- **Tests it honestly.** It compares models side by side on the same question, runs standard test prompts, and can check behaviour such as flattery or made-up answers.
+- **Sets up Studio.** It can add personas and prompts to Studio, and prepare tool and skill files for you to import.
+- **Keeps an eye on things.** It reports health, usage, speed and cost per model.
+- **Gets help when needed.** A local model in a Msty chat can pass a question it cannot handle to Cursor, Grok or Claude, and the answer comes back in the same chat.
+
+**Safe by default.** Looking around never changes anything. Nothing is written into Studio unless you confirm it and have switched writes on yourself, Studio is closed, and a backup has been taken first. Tools and skills are only ever saved as files for you to import. Keys and passwords are hidden from the AI. The detail is in [Security and data access](#security-and-data-access).
 
 ## The hybrid setup
 
-1. **Recommend.** Your AI reads hardware (chip, RAM, Apple generation) and suggests a Q4 model that fits. Recent Studio usage wins when that model still fits.
-2. **Set up.** `install_model` pulls through Local AI (`/api/pull`) when you pass `confirm=true`. MLX and llama.cpp still download in Msty.
-3. **Test.** Your AI runs calibration prompts, compares models side by side on the same prompt, and can run Bloom behaviour checks such as sycophancy when Bloom and an Anthropic key are present.
-4. **Tune.** `set_model_settings` creates an Ollama variant (`/api/create`) with temperature, top_p, context length and system prompt. The Modelfile text is a preview. Pass `confirm=true` to apply.
-5. **Configure Studio.** `generate_persona`, `import_tool_config` and `import_studio_pack` always save a JSON pack under `~/.msty-admin/imports/`. Tools, toolsets and skills stay in that pack for Toolbox import. Personas and prompts insert into Studio only with `confirm=true` and `MSTY_ALLOW_STUDIO_WRITES=1`, after a backup, and they refuse while Studio holds the live DB.
+Your Mac does the everyday work for free and in private. A stronger cloud AI steps in only for the hard questions.
+
+1. **Recommend.** Your AI reads your hardware and suggests a model that fits, preferring one you already use if it still fits.
+2. **Set up.** It installs that model in Msty's Local AI once you confirm.
+3. **Test.** It runs test prompts, compares models on the same question, and can run Bloom behaviour checks.
+4. **Tune.** It makes a tuned copy of the model with your chosen temperature, length limit and instructions. Your original model is left alone.
+5. **Configure Studio.** It writes personas and prompts into Studio when you allow it, and saves tools and skills as import files.
 6. **Work locally.** You chat with your local model in Msty as usual.
-7. **Escalate.** When a question is too hard, the local model calls `ask_frontier` or `escalate_if_needed`. Cursor is the default. Grok (`XAI_API_KEY`) and Claude (`ANTHROPIC_API_KEY`) are also available. Msty Studio has no hook API. The escalation persona is the honest equivalent.
+7. **Escalate.** When a question is too hard, the local model hands it to Cursor, Grok or Claude and shows you the answer.
 
 ```mermaid
 flowchart LR
@@ -54,12 +63,12 @@ flowchart LR
         I["Personas, prompts, skills, turnstiles, Knowledge Stacks, Toolbox tools"]
     end
     subgraph Writes["Writes"]
-        P["Personas and prompts: confirm plus MSTY_ALLOW_STUDIO_WRITES"]
-        V["Tools, toolsets and skills: JSON pack only"]
+        P["Personas and prompts: only when you allow it"]
+        V["Tools, toolsets and skills: saved as import files"]
     end
     M --> Reads
     M --> Writes
-    Writes --> X["JSON pack always. SQLite only for personas and prompts"]
+    Writes --> X["A backup is taken before any change"]
 ```
 
 ### A local chat asking for help
@@ -68,25 +77,25 @@ flowchart LR
 sequenceDiagram
     participant You
     participant Local as Local model in Msty
-    participant F as ask_frontier (Frontier server)
-    participant C as Cursor agent on your Mac
+    participant F as Frontier helper
+    participant C as Cursor, Grok or Claude
     You->>Local: Ask a question
     Local->>F: Hard question
-    F->>C: Run in ask mode
+    F->>C: Pass the question on
     C-->>F: Answer
     F-->>Local: Answer
     Local-->>You: Answer in the same chat
 ```
 
-The local model must make a real tool call, and the chat must use a toolset that contains only the Frontier server. Cursor answers with your Cursor account, so you need a Cursor user API key. See [Caveats](#caveats).
+For this to work, the chat uses a small toolset holding only the Frontier helper, and you need an API key for the service that answers. Setup is in [Hybrid local model and Cursor agent](#hybrid-local-model-and-cursor-agent).
 
 ## What you can do
 
-Once the server is added to your AI app, type requests as you normally would. The AI picks the tool. The groups below cover the 61 tools that exist. The full names are in [Tools summary](#tools-summary-61-in-total).
+Once the server is added to your AI app, ask as you normally would. You never need to name a tool, because the AI picks the right one. The groups below cover all 61 tools. The full names are in [Tools summary](#tools-summary-61-in-total).
 
 ### Know your machine and pick a model
 
-The server reads chip, RAM and GPU, then recommends a Q4 model that fits, preferring a model you already use when it still fits.
+It reads your chip, memory and graphics, then recommends a model sized to run well on them, preferring one you already use.
 
 - "What hardware is this Mac, and which local model fits?"
 - "Recommend a model for summarising long documents."
@@ -94,7 +103,7 @@ The server reads chip, RAM and GPU, then recommends a Q4 model that fits, prefer
 
 ### Install and tune local models
 
-`install_model` pulls through Local AI after `confirm=true`. `set_model_settings` creates a tuned Ollama variant. MLX and llama.cpp still download in Msty. You can also chat with those services from here.
+It installs models in Msty's Local AI once you confirm, and makes tuned copies with your settings. MLX and llama.cpp models still download inside Msty, but you can chat with them from here.
 
 - "Install llama3.2:3b on Local AI."
 - "Make a cooler variant of that model with temperature 0.2."
@@ -102,7 +111,7 @@ The server reads chip, RAM and GPU, then recommends a Q4 model that fits, prefer
 
 ### Keep Msty healthy
 
-Health, install detection, service ports, MCP status, provider config (keys redacted), schema migrations, and a read-only Claude Desktop to Msty tool delta.
+It checks that Msty is installed and running, which version you have, which services are up, and how your providers are set up, with keys hidden. It can also show which tools you have in Claude Desktop but not in Msty.
 
 - "Is my Msty install healthy, and which version is it?"
 - "What is the MCP server status?"
@@ -110,7 +119,7 @@ Health, install detection, service ports, MCP status, provider config (keys reda
 
 ### See what is in Studio
 
-Read-only inventory of workspaces, personas, crews, Knowledge Stacks, turnstiles, prompts, skills, Context Studio, agent plans and Toolbox tools. Export a workflow pack. Get one entity by id.
+It lists what you have built in Studio, such as workspaces, personas, crews, Knowledge Stacks, prompts, skills and Toolbox tools, without changing anything. It can also export a workspace as a file.
 
 - "List my personas, knowledge stacks and workspaces."
 - "Show the tools in my Toolbox and export one config."
@@ -118,7 +127,7 @@ Read-only inventory of workspaces, personas, crews, Knowledge Stacks, turnstiles
 
 ### Bring personas, prompts, skills and tool configs into Studio safely
 
-Every write tool saves a JSON pack under `~/.msty-admin/imports/`. Personas and prompts insert into SQLite only with `confirm=true` and `MSTY_ALLOW_STUDIO_WRITES=1`. Tools, toolsets and skills stay in the pack for Toolbox import. Configs with `command`, `args` or `env` are flagged as running a program on your machine.
+Everything it creates is first saved as a file in `~/.msty-admin/imports/`. Personas and prompts go straight into Studio only when you confirm and have switched writes on (`MSTY_ALLOW_STUDIO_WRITES=1`). Tools and skills stay as files you import in Toolbox, and any tool that would run a program on your Mac is flagged.
 
 Personas are written in the same shape Studio 2.9 uses for its own. Quit Studio before a write, because writes are refused while it is running. If your Msty plan does not include Persona Studio, the persona is still saved in Studio but the persona list does not show it.
 
@@ -128,7 +137,7 @@ Personas are written in the same shape Studio 2.9 uses for its own. Quit Studio 
 
 ### Compare, calibrate and Bloom-evaluate
 
-Side-by-side answers, built-in calibration prompts, a quality score on a single reply, and Bloom behaviour checks when Bloom and an Anthropic key are present. Bloom invents no score.
+It shows two models' answers side by side, runs built-in test prompts, and scores a single reply. With Anthropic's Bloom framework and an Anthropic key, it also checks behaviour such as flattery, made-up answers and overconfidence. Without them it says so rather than inventing a score.
 
 - "Compare qwen2.5 and mistral on this prompt."
 - "Test llama3.2 on reasoning and coding."
@@ -136,7 +145,7 @@ Side-by-side answers, built-in calibration prompts, a quality score on a single 
 
 ### Escalate to Grok, Claude or Cursor
 
-From a local-model chat that uses the one-tool Frontier server, a hard question can go to Cursor (default), Grok or Claude and the answer comes back in the same chat. `escalate_if_needed` is the gated form. See [Hybrid local model and Cursor agent](#hybrid-local-model-and-cursor-agent).
+From a local-model chat, a hard question can go to Cursor, Grok or Claude, and the answer comes back in the same chat. It can also decide for you whether a question needs handing off. See [Hybrid local model and Cursor agent](#hybrid-local-model-and-cursor-agent).
 
 - "Ask Grok why this SwiftUI view is not updating."
 - "Ask the Cursor agent on this Mac."
@@ -144,7 +153,7 @@ From a local-model chat that uses the one-tool Frontier server, a hard question 
 
 ### Usage insights and cost
 
-Studio insights give tokens, speed and `totalCostInUSD` per model. Conversation patterns sit next to that.
+It shows how much each model is used, how fast it is and what it costs, along with patterns in your conversations.
 
 - "Show model performance metrics and cost for the last 7 days."
 - "Analyse my conversation patterns."
