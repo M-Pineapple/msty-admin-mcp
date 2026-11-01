@@ -120,6 +120,8 @@ Read-only inventory of workspaces, personas, crews, Knowledge Stacks, turnstiles
 
 Every write tool saves a JSON pack under `~/.msty-admin/imports/`. Personas and prompts insert into SQLite only with `confirm=true` and `MSTY_ALLOW_STUDIO_WRITES=1`. Tools, toolsets and skills stay in the pack for Toolbox import. Configs with `command`, `args` or `env` are flagged as running a program on your machine.
 
+Personas are written in the same shape Studio 2.9 uses for its own. Quit Studio before a write, because writes are refused while it is running. If your Msty plan does not include Persona Studio, the persona is still saved in Studio but the persona list does not show it.
+
 - "Write a persona called Research Assistant into Studio."
 - "Save this tool config as a pack I can import in Toolbox."
 - "How could my personas and Knowledge Stacks be better?"
