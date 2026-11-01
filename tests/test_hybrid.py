@@ -16,9 +16,11 @@ from src.install import (
     build_modelfile,
     create_variant,
     looks_like_local_path,
+    leftover_scheme,
     normalise_model_name,
     passthrough_allowed,
     pull_model,
+    validate_model_name,
 )
 from src.paths import is_process_running
 from src import writes
@@ -297,6 +299,13 @@ class TestInstallAndAllowList:
         assert normalise_model_name("llama-tuned") == "llama-tuned:latest"
         assert normalise_model_name("llama3.2:3b") == "llama3.2:3b"
 
+    def test_normalise_lowercases_and_strips_scheme_and_registry_port(self):
+        assert normalise_model_name("LLAMA3") == "llama3:latest"
+        assert normalise_model_name("llama3:LATEST") == "llama3:latest"
+        assert normalise_model_name("registry.ollama.ai:443/library/llama3") == "llama3:latest"
+        assert normalise_model_name("https://registry.ollama.ai/library/llama3") == "llama3:latest"
+        assert normalise_model_name("HTTP://registry.ollama.ai:11434/library/llama3") == "llama3:latest"
+
     def test_create_variant_refuses_registry_name_matching_existing(self):
         calls = []
 
@@ -339,6 +348,43 @@ class TestInstallAndAllowList:
         )
         assert result["wrote"] is False
         assert result["normalised_name"] == "llama-tuned:latest"
+
+    @pytest.mark.parametrize(
+        "variant",
+        (
+            "LLAMA3",
+            "llama3:LATEST",
+            "registry.ollama.ai:443/library/llama3",
+        ),
+    )
+    def test_create_variant_refuses_case_scheme_and_port_aliases(self, variant):
+        calls = []
+
+        def fake_request(endpoint, port=None, method="GET", data=None, timeout=10):
+            calls.append(endpoint)
+            if endpoint == "/api/tags":
+                return {"success": True, "data": {"models": [{"name": "llama3:latest"}]}}
+            return {"success": False}
+
+        result = create_variant(
+            "llama3.2:3b", variant, confirm=True, request_fn=fake_request
+        )
+        assert result["wrote"] is False
+        assert "already exists" in result["error"]
+        assert result["normalised_name"] == "llama3:latest"
+        assert "/api/create" not in calls
+
+    def test_rejects_leftover_scheme_separator(self):
+        assert leftover_scheme("llama3:latest://evil")
+        assert leftover_scheme("://still-here")
+        assert leftover_scheme("https://registry.ollama.ai/library/llama3") is False
+        err = validate_model_name("llama3:latest://evil")
+        assert err is not None
+        assert "://" in err
+        result = create_variant("llama3.2:3b", "llama3:latest://evil", confirm=False)
+        assert result["success"] is False
+        assert "://" in result["error"]
+        assert validate_model_name("https://registry.ollama.ai/library/llama3") is None
 
     def test_rejects_dotdot_in_model_name(self):
         assert looks_like_local_path("../evil")
@@ -513,6 +559,16 @@ class TestWrites:
         assert conn.execute("SELECT COUNT(*) FROM skill_preferences").fetchone()[0] == 0
         conn.close()
 
+    def test_sqlite_readonly_uri_uses_as_uri(self, tmp_path):
+        db_path = tmp_path / "studio.db"
+        db_path.write_bytes(b"")
+        uri = writes.sqlite_readonly_uri(db_path)
+        expected = db_path.resolve().as_uri()
+        assert uri == f"{expected}?mode=ro"
+        assert uri.startswith("file:")
+        conn = sqlite3.connect(uri, uri=True)
+        conn.close()
+
     def test_backup_includes_wal_row(self, tmp_path):
         db_path = tmp_path / "studio.db"
         conn = sqlite3.connect(str(db_path))
@@ -526,7 +582,7 @@ class TestWrites:
         assert wal.exists()
         dest = writes.backup_database(db_path, dest_dir=tmp_path / "backups")
         assert dest.stat().st_mode & 0o077 == 0
-        check = sqlite3.connect(f"file:{dest}?mode=ro", uri=True)
+        check = sqlite3.connect(writes.sqlite_readonly_uri(dest), uri=True)
         names = [row[0] for row in check.execute("SELECT name FROM items")]
         check.close()
         conn.close()

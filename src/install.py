@@ -36,11 +36,8 @@ PASSTHROUGH_POST = frozenset(
 _PULL_HINT = "Use install_model with confirm=true to pull a model."
 _CREATE_HINT = "Use set_model_settings with confirm=true to create a tuned variant."
 MODEL_NAME_RE = re.compile(r"^[A-Za-z0-9._:/-]+$")
-_REGISTRY_PREFIXES = (
-    "https://registry.ollama.ai/",
-    "http://registry.ollama.ai/",
-    "registry.ollama.ai/",
-)
+_SCHEME_RE = re.compile(r"^[a-z][a-z0-9+.-]*://", re.IGNORECASE)
+_REGISTRY_HOST_RE = re.compile(r"^registry\.ollama\.ai(?::\d+)?/", re.IGNORECASE)
 _LIBRARY_PREFIX = "library/"
 _LOCAL_SUFFIXES = (".gguf", ".bin", ".pt", ".pth", ".safetensors")
 
@@ -59,16 +56,27 @@ def looks_like_local_path(name: str) -> bool:
     return any(lowered.endswith(suffix) for suffix in _LOCAL_SUFFIXES)
 
 
+def _strip_uri_schemes(text: str) -> str:
+    """Remove leading URI schemes. Repeat so nested schemes do not remain."""
+    while True:
+        match = _SCHEME_RE.match(text)
+        if not match:
+            return text
+        text = text[match.end() :]
+
+
+def leftover_scheme(name: str) -> bool:
+    """True when ``://`` remains after leading URI schemes are stripped."""
+    return "://" in _strip_uri_schemes((name or "").strip().lower())
+
+
 def normalise_model_name(name: str) -> str:
-    """Strip registry/library prefixes and add :latest when the name has no tag."""
-    text = (name or "").strip()
-    lowered = text.lower()
-    for prefix in _REGISTRY_PREFIXES:
-        if lowered.startswith(prefix):
-            text = text[len(prefix) :]
-            lowered = text.lower()
-            break
-    if lowered.startswith(_LIBRARY_PREFIX):
+    """Lowercase, strip scheme and registry/library prefixes, add :latest when untagged."""
+    text = _strip_uri_schemes((name or "").strip().lower())
+    match = _REGISTRY_HOST_RE.match(text)
+    if match:
+        text = text[match.end() :]
+    if text.startswith(_LIBRARY_PREFIX):
         text = text[len(_LIBRARY_PREFIX) :]
     last = text.rsplit("/", 1)[-1]
     if text and ":" not in last:
@@ -85,6 +93,11 @@ def validate_model_name(name: str, field: str = "model") -> Optional[str]:
         return (
             f"{field} looks like a local path. Use a model name such as llama3.2:3b, "
             "not a filesystem path, '..', or a leading '/' or '~'."
+        )
+    if leftover_scheme(cleaned):
+        return (
+            f"{field} still contains '://' after scheme handling. "
+            "Use a model name such as llama3.2:3b."
         )
     if not MODEL_NAME_RE.fullmatch(cleaned):
         return (

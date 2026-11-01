@@ -2,20 +2,22 @@
 
 ## Unreleased
 
-Hybrid local and cloud tools on top of 6.1.5. Version number is unchanged until operator GO.
+## v6.2.0 - 2026-11-01
+
+Hybrid local and cloud tools on top of 6.1.5.
 
 ### Security
 
 - Tools, toolsets and skills are never inserted into Studio SQLite from MCP. `import_tool_config` and `import_studio_pack` save those kinds as a JSON pack for Toolbox import.
-- Personas, prompts and skills need both `confirm=true` and operator env `MSTY_ALLOW_STUDIO_WRITES=1` (off by default, not a tool argument).
+- Personas and prompts need both `confirm=true` and operator env `MSTY_ALLOW_STUDIO_WRITES=1` (off by default, not a tool argument).
 - Tool configs with `command`, `args` or `env` are refused for SQLite apply and flagged as running a program on your machine.
 - `is_process_running` fails closed when psutil is missing or errors, and matches the live `MstyStudio` process name.
 - Model names for pull and create must match `^[A-Za-z0-9._:/-]+$`. `set_model_settings` never overwrites a name already in `/api/tags`.
 - Sidecar dirs are `0700`. Session files, import packs, DB backups and Bloom history are written `0600` with `O_NOFOLLOW`.
 - `query_local_ai_service` sends the allow-list's normalised method.
 - Bloom subprocess gets a minimal environment and its temp YAML is deleted.
-- Model names are normalised (strip `registry.ollama.ai/` and `library/`, add `:latest` when untagged) before the create existence check. Names with `..`, a leading `/` or `~`, or a local-path shape are refused.
-- Database backups use `sqlite3.Connection.backup()`, so WAL contents are included, written `0600`.
+- Model names are lowercased, URI schemes are stripped, and `registry.ollama.ai` with an optional port plus `library/` is stripped before the create existence check. Untagged names get `:latest`. Leftover `://` is refused. Names with `..`, a leading `/` or `~`, or a local-path shape are refused.
+- Database backups use `sqlite3.Connection.backup()`, so WAL contents are included, written `0600`. The read-only source URI comes from `Path.as_uri()`.
 - Skills are JSON-pack only. Free-form skill content can carry `command`, `args` or `env`.
 - Hardware binaries try known absolute paths first, then `shutil.which`.
 

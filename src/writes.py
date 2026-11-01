@@ -119,13 +119,18 @@ def studio_holds_live_database(path: Path) -> bool:
     return is_process_running("MstyStudio")
 
 
+def sqlite_readonly_uri(path: Path) -> str:
+    """Read-only SQLite URI. Path.as_uri encodes special characters."""
+    return f"{path.resolve().as_uri()}?mode=ro"
+
+
 def backup_database(database_path: Path, dest_dir: Optional[Path] = None) -> Path:
     """Copy the logical SQLite database, including WAL, into a 0600 file."""
     folder = dest_dir or backups_dir()
     secure_mkdir(folder)
     dest = folder / f"{database_path.name}-{_now_stamp()}.bak"
     secure_write(dest, b"")
-    src = sqlite3.connect(f"file:{database_path}?mode=ro", uri=True)
+    src = sqlite3.connect(sqlite_readonly_uri(database_path), uri=True)
     try:
         dst = sqlite3.connect(str(dest))
         try:
