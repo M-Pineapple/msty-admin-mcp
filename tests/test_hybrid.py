@@ -1404,3 +1404,29 @@ def test_pull_source_refuses_dotless_hosts():
         assert validate_pull_source(bad), bad
     for ok in ("llama3.2:3b", "library/llama3.2:3b", "user/model:tag", "hf.co/org/m", "registry.ollama.ai/library/qwen2.5:7b"):
         assert validate_pull_source(ok) is None, ok
+
+
+def test_pull_source_refuses_three_part_dotless_hosts():
+    from src.install import validate_pull_source
+    for bad in ("intranet/ns/x", "nas/library/llama3", "2130706433/ns/x", "a/b/c/d"):
+        assert validate_pull_source(bad), bad
+    for ok in ("registry.ollama.ai/library/llama3", "hf.co/org/repo/sub", "hf.co/org/m:q4"):
+        assert validate_pull_source(ok) is None, ok
+
+
+def test_create_variant_refuses_foreign_base():
+    from src.install import create_variant
+    called = []
+    for base in ("evil.com/a/b", "intranet/ns/x", "localhost:5000/m"):
+        r = create_variant(base, "safe-variant", temperature=0.2, confirm=True,
+                           request_fn=lambda *a, **k: called.append(a) or {})
+        assert r["success"] is False and r["wrote"] is False, base
+    assert called == []
+
+
+def test_write_tools_marked_destructive():
+    import asyncio
+    from src.server import mcp
+    tools = {t.name: t for t in asyncio.run(mcp.list_tools())}
+    for name in ("install_model", "set_model_settings"):
+        assert tools[name].annotations.destructiveHint is True

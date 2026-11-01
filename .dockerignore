@@ -15,3 +15,9 @@ tests
 .DS_Store
 .env
 .env.local
+*.db
+*.sqlite
+*.sqlite3
+*.bak
+*.pem
+*.key

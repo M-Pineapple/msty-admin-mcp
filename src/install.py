@@ -87,6 +87,12 @@ def validate_pull_source(name: str) -> Optional[str]:
         return None
     if _REGISTRY_HOST_RE.match(text):
         return None
+    if text.count("/") >= 2:
+        return (
+            "install_model only pulls bare Ollama names (registry.ollama.ai) "
+            "or hf.co/ paths. Names with three or more parts must start with "
+            "registry.ollama.ai/ or hf.co/."
+        )
     if "/" in text:
         host = text.split("/", 1)[0]
         if "." in host or ":" in host or "[" in host or host == "localhost":
@@ -359,8 +365,11 @@ def create_variant(
     """POST /api/create with structured fields. Modelfile text is preview only."""
     base = (base_model or "").strip()
     variant = (variant_name or "").strip()
-    name_error = validate_model_name(base, "base_model") or validate_model_name(
-        variant, "variant_name"
+    name_error = (
+        validate_model_name(base, "base_model")
+        or validate_model_name(variant, "variant_name")
+        or validate_pull_source(base)
+        or validate_pull_source(variant)
     )
     if name_error:
         return {"success": False, "error": name_error, "wrote": False}

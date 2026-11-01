@@ -661,7 +661,7 @@ def recommend_model(
 
 
 @mcp.tool(
-    **ann("Install model", read_only=False, idempotent=False, open_world=True),
+    **ann("Install model", read_only=False, destructive=True, idempotent=False, open_world=True),
     description=(
         "Pull a model through Local AI (Ollama-compatible /api/pull). "
         "Use recommend_model to pick a size. MLX and Llama.cpp have no pull API here. "
@@ -687,7 +687,7 @@ def install_model(
 
 
 @mcp.tool(
-    **ann("Set model settings", read_only=False, idempotent=False, open_world=True),
+    **ann("Set model settings", read_only=False, destructive=True, idempotent=False, open_world=True),
     description=(
         "Create a tuned Ollama variant via /api/create from an installed base model. "
         "Use install_model first if the base is missing. Does not overwrite an existing name. "
