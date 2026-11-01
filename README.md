@@ -2,7 +2,7 @@
 
 <img src="assets/logo.svg" alt="Msty Admin MCP logo" width="240"/>
 
-# Msty Admin MCP — v6.1.5
+# Msty Admin MCP v6.1.5
 
 [![Licence: MIT](https://img.shields.io/github/license/M-Pineapple/msty-admin-mcp)](LICENSE)
 [![Python](https://img.shields.io/badge/Python-3.10+-3776AB?logo=python&logoColor=white)](https://www.python.org)
@@ -15,13 +15,119 @@
 
 <img src="assets/demo.gif" alt="msty-admin-mcp answering initialize and listing its tools" width="720"/>
 
-Comprehensive MCP server for administering **Msty Studio Desktop 2.9+** with **56 tools** across 9 phases: real Studio path/DB detection, entity inventory (Context Studio, Knowledge Stacks, Agent Mode, Turnstiles, …), insights analytics, Nexus bridge, Bloom evaluation, multi-backend local inference, and a handoff from a local model to the Cursor agent on this Mac.
+**Ask your AI about your Msty Studio setup in plain words, and get real answers from your own install.**
+
+## What this does
+
+Msty Admin MCP lets the AI you already chat with see inside Msty Studio Desktop 2.9 or later. Ask it to list your personas, Knowledge Stacks, workspaces and Toolbox tools, check that Msty and its local model services are healthy, pull usage figures from Studio insights, recommend a local model for a task, or test a model for behaviour such as sycophancy and overconfidence. A separate small server also lets a local model in a Msty chat pass a hard question to the Cursor agent on the same Mac and show the answer in that chat.
+
+**Data access in brief.** The Studio database is opened read only. API keys, tokens, passwords and other credential fields are redacted before anything reaches the chat. Full details are in [Security and data access](#security-and-data-access).
+
+## What you can ask
+
+Once the server is added to Msty Studio, Claude Desktop or Cursor, type your request as you normally would. The AI picks the right tool.
+
+- **"Is my Msty install healthy?"** Checks the app, the database and every local model service in one go, so you know where to look when something stops working. (`analyse_msty_health`)
+- **"List my personas and Knowledge Stacks."** A full inventory of what you have built in Studio, without clicking through each screen. (`list_personas`, `list_knowledge_stacks`)
+- **"Which models have I used most, and how fast were they?"** Reads Studio's own insights data, so you see real usage rather than guesses. (`get_model_performance_metrics`)
+- **"Recommend a local model for summarising long documents."** Suggests a model from the ones you have installed. (`recommend_model`)
+- **"Run a Bloom evaluation for sycophancy on this model."** Tests how a model behaves, not just what it knows. Needs an Anthropic API key. (`bloom_evaluate_model`)
+- **"Ask the Cursor agent on this Mac why this SwiftUI view is not updating."** Used from a local model chat with the Frontier server, this hands one question to Cursor and returns the answer in the same chat. (`ask_frontier`)
+
+### More example prompts
+
+#### Health and install
+
+- "Detect my Msty installation and show the version."
+- "Analyse Msty health."
+- "What is the MCP server status?"
+
+#### Studio inventory
+
+- "List my personas and knowledge stacks."
+- "Show all workspaces."
+- "List the tools in my Toolbox."
+- "Export a workflow pack for my current workspace."
+
+#### Local models and services
+
+- "Which local models are available?"
+- "Recommend a model for summarising long documents."
+- "What is the Nexus status and which models does it expose?"
+
+#### Analytics and Bloom
+
+- "Show model performance metrics from Studio insights."
+- "Analyse my conversation patterns."
+- "Run a Bloom evaluation for sycophancy on this model."
+
+#### Frontier handoff
+
+For a local model chat, use the one tool Frontier server (see [Hybrid local model and Cursor agent](#hybrid-local-model-and-cursor-agent)):
+
+- "Ask the Cursor agent on this Mac why this SwiftUI view is not updating."
+
+## How it works
+
+### Everyday admin in chat
+
+```mermaid
+flowchart LR
+    U["You"] --> A["AI client (Claude, Msty or Cursor)"]
+    A --> M["msty-admin-mcp"]
+    M --> D["Studio database (read only)"]
+    M --> S["Local model services and Nexus"]
+    D --> M
+    S --> M
+    M --> A
+    A --> R["Answer in your chat"]
+```
+
+### Handing a hard question to Cursor
+
+```mermaid
+flowchart LR
+    L["Local model in a Msty chat"] --> Q{"Too hard to answer?"}
+    Q -- "No" --> N["Local model answers"]
+    Q -- "Yes" --> F["ask_frontier (Frontier server)"]
+    F --> C["Cursor agent on the same Mac"]
+    C --> B["Answer appears in the same Msty chat"]
+```
+
+The local model must make a real tool call, and the chat must use a toolset that contains only the Frontier server. See [Caveats](#caveats).
+
+### What it can see in Studio
+
+```mermaid
+flowchart TD
+    Q["Your question in plain words"] --> M["msty-admin-mcp"]
+    M --> P["Personas"]
+    M --> K["Knowledge Stacks"]
+    M --> W["Workspaces"]
+    M --> T["Toolbox tools"]
+    M --> CS["Context Studio"]
+    M --> CR["Crews"]
+    M --> PR["Prompts and skills"]
+    M --> TU["Turnstiles"]
+    M --> LM["Local models"]
+    M --> IN["Usage insights"]
+```
+
+## Who this is for
+
+Msty Studio users who want to look after or understand their setup by asking questions instead of clicking through screens, and anyone running local models who wants them to call on a stronger agent only when a question is beyond them, without leaving the chat. You do not need to know how MCP works beyond adding a server to your app.
+
+## Security and data access
+
+- The Studio database is opened **read only**. Inventory and analytics never write to it. `import_tool_config` refuses live writes by default.
+- Credential columns (keys, tokens, secrets, passwords, auth headers, URLs, config and command line columns) always read as NULL in read only SQL, and provider keys are redacted. Secrets typed into free text, such as a chat message or a note, are out of scope.
+- The Frontier server needs a Cursor user API key, which stays in Msty's toolbox environment and never belongs in this repository. In ask mode the Cursor agent does not send mail, move or delete files, or use trading tools.
 
 **Requirements**: Python 3.10+, MCP SDK v1.0.0+, psutil 5.9.0+
 
 macOS ships `python3` 3.9. This package will not install on that interpreter. Use Homebrew Python 3.12 (or any 3.10+) as shown below.
 
-> **New to Bloom?** Jump to the [Bloom Behavioral Evaluation](#bloom-behavioral-evaluation) section or read the [full Bloom guide](docs/BLOOM_GUIDE.md).
+> **New to Bloom?** Jump to the [Bloom Behavioural Evaluation](#bloom-behavioural-evaluation) section or read the [full Bloom guide](docs/BLOOM_GUIDE.md).
 
 ---
 
@@ -67,7 +173,7 @@ This server targets the 1.x MCP Python SDK (`mcp>=1.0.0,<2`).
 
 After `pip install msty-admin-mcp`, the console script `msty-admin-mcp` is on that environment's PATH. Point the host at it.
 
-**Claude Desktop** — merge into `~/Library/Application Support/Claude/claude_desktop_config.json`:
+**Claude Desktop**: merge into `~/Library/Application Support/Claude/claude_desktop_config.json`:
 
 ```json
 {
@@ -79,7 +185,7 @@ After `pip install msty-admin-mcp`, the console script `msty-admin-mcp` is on th
 }
 ```
 
-**Cursor** — merge into `~/.cursor/mcp.json`:
+**Cursor**: merge into `~/.cursor/mcp.json`:
 
 ```json
 {
@@ -94,43 +200,6 @@ After `pip install msty-admin-mcp`, the console script `msty-admin-mcp` is on th
 If the host cannot see the script, set `command` to the absolute path of `msty-admin-mcp` inside the venv (`…/bin/msty-admin-mcp`). Restart the host after editing.
 
 The Frontier one-tool server is separate. See [Hybrid local model and Cursor agent](#hybrid-local-model-and-cursor-agent).
-
----
-
-## Usage
-
-Once the server is registered with Msty Studio (or another MCP host), ask in natural language. The host maps your words onto the tools.
-
-### Health and install
-
-- "Detect my Msty installation and show the version."
-- "Analyse Msty health."
-- "What is the MCP server status?"
-
-### Studio inventory
-
-- "List my personas and knowledge stacks."
-- "Show all workspaces."
-- "List the tools in my Toolbox."
-- "Export a workflow pack for my current workspace."
-
-### Local models and services
-
-- "Which local models are available?"
-- "Recommend a model for summarising long documents."
-- "What is the Nexus status and which models does it expose?"
-
-### Analytics and Bloom
-
-- "Show model performance metrics from Studio insights."
-- "Analyse my conversation patterns."
-- "Run a Bloom evaluation for sycophancy on this model."
-
-### Frontier handoff
-
-For a local-model chat, use the one-tool Frontier server (see [Hybrid local model and Cursor agent](#hybrid-local-model-and-cursor-agent)):
-
-- "Ask the Cursor agent on this Mac why this SwiftUI view is not updating."
 
 ---
 
@@ -208,7 +277,7 @@ Use a **separate one-tool server** for the local-model chat. The full admin serv
 ### Fresh install
 
 1. Install this package and the Cursor agent CLI (`cursor-agent`). It must be on the PATH seen by Msty, or at `~/.local/bin/cursor-agent`. Login and API keys: [Cursor CLI authentication](https://cursor.com/docs/cli/reference/authentication).
-2. Create a **user** API key in Cursor Dashboard → API Keys. An admin key does not work. Do not commit the key and do not put it in this repo.
+2. Create a **user** API key in Cursor Dashboard, API Keys. An admin key does not work. Do not commit the key and do not put it in this repo.
 3. In Msty, add a toolbox server named Frontier. From a source checkout:
 
 ```json
@@ -253,22 +322,22 @@ The admin server is unchanged for Studio inventory and the other 55 tools. Add t
 
 ---
 
-## Tools Summary (56 Total)
+## Tools summary (56 in total)
 
 ### Phase 1: Foundational (6)
-- `detect_msty_installation` — app, version, DB path, ports
-- `read_msty_database` — `stats` / `tables` / read-only SQL
+- `detect_msty_installation`: app, version, DB path, ports
+- `read_msty_database`: `stats` / `tables` / read-only SQL
   - In read-only SQL, credential columns (key, token, secret, password, auth and header names, URL, config/JSON and command-line columns) always read as NULL. Secrets typed into arbitrary free-text columns, such as a chat message or a note, are out of scope for this tool.
-- `list_configured_tools` — Toolbox MCP tools
-- `get_model_providers` — services + Studio providers (keys redacted)
-- `analyse_msty_health` — install + DB + services
-- `get_server_status` — MCP status
+- `list_configured_tools`: Toolbox MCP tools
+- `get_model_providers`: services and Studio providers (keys redacted)
+- `analyse_msty_health`: install, DB and services
+- `get_server_status`: MCP status
 
 ### Phase 2: Configuration (4)
-- `export_tool_config` — export a tool by name/id
-- `sync_claude_preferences` — Claude ↔ Msty delta report
-- `generate_persona` — persona JSON for Persona Studio
-- `import_tool_config` — validate import (live DB writes refused by default)
+- `export_tool_config`: export a tool by name/id
+- `sync_claude_preferences`: Claude to Msty delta report
+- `generate_persona`: persona JSON for Persona Studio
+- `import_tool_config`: validate import (live DB writes refused by default)
 
 ### Phase 3: Service Integration (11)
 - `get_service_status`, `list_available_models`, `query_local_ai_service`
@@ -278,10 +347,10 @@ The admin server is unchanged for Studio inventory and the other 55 tools. Add t
 - `get_vibe_proxy_status`, `query_vibe_proxy`
 
 ### Phase 4: Intelligence (5)
-- `get_model_performance_metrics` — from Studio `insightsLanguageModelUsage`
+- `get_model_performance_metrics`: from Studio `insightsLanguageModelUsage`
 - `analyse_conversation_patterns`
 - `compare_model_responses`
-- `optimise_knowledge_stacks` — live Next Gen / draft / compose status
+- `optimise_knowledge_stacks`: live Next Gen / draft / compose status
 - `suggest_persona_improvements`
 
 ### Phase 5: Calibration (4)
@@ -303,13 +372,13 @@ The admin server is unchanged for Studio inventory and the other 55 tools. Add t
 - `detect_nexus`, `list_nexus_models`, `query_nexus`, `get_insights_usage`
 
 ### Phase 9: Frontier handoff (1)
-- `ask_frontier` — hand one question to the Cursor agent on this machine and return the answer in the Msty chat. Use the one-tool server (`msty-frontier` or `python -m src.frontier_main`) for a local-model chat. See [Hybrid local model and Cursor agent](#hybrid-local-model-and-cursor-agent).
+- `ask_frontier`: hand one question to the Cursor agent on this machine and return the answer in the Msty chat. Use the one-tool server (`msty-frontier` or `python -m src.frontier_main`) for a local-model chat. See [Hybrid local model and Cursor agent](#hybrid-local-model-and-cursor-agent).
 
 ---
 
-## Bloom Behavioral Evaluation
+## Bloom Behavioural Evaluation
 
-Phase 6 introduces behavioral evaluation powered by [Anthropic's Bloom framework](https://www.anthropic.com/research/bloom). Rather than testing what a model knows, Bloom tests how it behaves — detecting failure modes like sycophancy, hallucination, and overconfidence that standard benchmarks miss.
+Phase 6 introduces behavioural evaluation powered by [Anthropic's Bloom framework](https://www.anthropic.com/research/bloom). Rather than testing what a model knows, Bloom tests how it behaves. It detects failure modes such as sycophancy, hallucination, and overconfidence that standard benchmarks miss.
 
 See the **[Bloom Knowledge Base Guide](docs/BLOOM_GUIDE.md)**.
 
@@ -339,18 +408,18 @@ v6 ships unit tests for path resolution, read-only SQL guards, redaction, invent
 ### Q: Does this write to the Studio database?
 **A**: Inventory and analytics are read-only. `import_tool_config` refuses live writes by default because Studio may hold locks on the File System DB. Prefer Toolbox JSON import for writes.
 
-### Q: What's the Nexus integration?
+### Q: What is the Nexus integration?
 **A**: [Msty Nexus](https://msty.ai/nexus/) is the local runtime/gateway. Phase 8 detects it and lists models via its OpenAI-compatible endpoint (`MSTY_NEXUS_PORT`).
 
 ---
 
-## License
+## Licence
 
-MIT License — See LICENSE file
+MIT Licence. See the LICENSE file.
 
 ## Contributing
 
-Contributions welcome! Please open issues or PRs on GitHub.
+Contributions are welcome. Please open issues or PRs on GitHub.
 
 ## More MCP servers by M-Pineapple
 
@@ -364,20 +433,20 @@ Other MCP servers in this portfolio:
 - [TextEdit MCP](https://github.com/M-Pineapple/TextEdit-MCP). Formatted RTF documents via macOS TextEdit.
 - [HubSpot Auditor](https://github.com/M-Pineapple/hubspot-auditor). Read-only HubSpot portal audit.
 
-## 💖 Support This Project
+## Support this project
 
-If this project has helped enhance your development workflow or saved you time, please support :
+If this project has helped enhance your development workflow or saved you time, please support it:
 
 <a href="https://www.buymeacoffee.com/mpineapple" target="_blank"><img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" alt="Buy Me A Coffee" style="height: 60px !important;width: 217px !important;" ></a>
 
 Your support helps me:
 
 * Maintain and improve this project with new features
-* Keep the project open-source and free for everyone
+* Keep the project open source and free for everyone
 * Dedicate more time to addressing user requests and bug fixes
 * Explore new terminal integrations and command intelligence
 
-Thank you for considering supporting my work! 🙏
+Thank you for considering supporting my work.
 
 ## Support
 
