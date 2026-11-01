@@ -12,6 +12,162 @@ import pytest
 
 from src.hardware import _binary, catalog, detect_hardware
 from src.hardware.catalog import memory_budget_gb, recommend
+STUDIO_29_SCHEMA = """
+CREATE TABLE personaFolders (
+    id TEXT PRIMARY KEY NOT NULL,
+    name TEXT NOT NULL,
+    colorIcon TEXT,
+    isExpanded INTEGER DEFAULT 1 NOT NULL,
+    sortOrder INTEGER DEFAULT -1 NOT NULL,
+    extras TEXT,
+    createdAt TEXT DEFAULT CURRENT_TIMESTAMP NOT NULL
+);
+CREATE TABLE personas (
+    id TEXT PRIMARY KEY NOT NULL,
+    name TEXT NOT NULL UNIQUE,
+    colorIcon TEXT,
+    description TEXT,
+    folderId TEXT NOT NULL,
+    systemPrompt TEXT NOT NULL,
+    partialRTDInfo TEXT,
+    partialSelectableAttachments TEXT,
+    partialToolsetsInfo TEXT,
+    partialLiveContextsInfo TEXT,
+    contextShieldInfo TEXT,
+    partialModelInfo TEXT,
+    fewShotPrompts TEXT,
+    extras TEXT,
+    createdAt TEXT DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    partialKnowledgeStacksInfo TEXT,
+    activeVersionId TEXT,
+    FOREIGN KEY (folderId) REFERENCES personaFolders(id) ON DELETE CASCADE
+);
+CREATE TABLE personaVersions (
+    id TEXT PRIMARY KEY NOT NULL,
+    personaId TEXT NOT NULL,
+    versionNumber INTEGER NOT NULL,
+    name TEXT NOT NULL,
+    colorIcon TEXT,
+    description TEXT,
+    systemPrompt TEXT NOT NULL,
+    partialRTDInfo TEXT,
+    partialSelectableAttachments TEXT,
+    partialToolsetsInfo TEXT,
+    partialKnowledgeStacksInfo TEXT,
+    partialLiveContextsInfo TEXT,
+    contextShieldInfo TEXT,
+    partialModelInfo TEXT,
+    fewShotPrompts TEXT,
+    tags TEXT,
+    extras TEXT,
+    changelog TEXT,
+    createdAt TEXT DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    FOREIGN KEY (personaId) REFERENCES personas(id) ON DELETE CASCADE
+);
+CREATE TABLE promptsLibraryFolders (
+    id TEXT PRIMARY KEY NOT NULL,
+    name TEXT NOT NULL,
+    colorIcon TEXT,
+    isExpanded INTEGER DEFAULT 1 NOT NULL,
+    sortOrder INTEGER DEFAULT -1 NOT NULL,
+    folderParentId TEXT,
+    extras TEXT,
+    createdAt TEXT DEFAULT CURRENT_TIMESTAMP NOT NULL
+);
+CREATE TABLE promptsLibraryPrompts (
+    id TEXT PRIMARY KEY NOT NULL,
+    title TEXT NOT NULL,
+    text TEXT NOT NULL,
+    folderId TEXT NOT NULL,
+    source TEXT DEFAULT 'ootb' NOT NULL,
+    isBookmarked INTEGER DEFAULT 0 NOT NULL,
+    extras TEXT,
+    createdAt TEXT DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    lastUsedAt TEXT,
+    activeVersionId TEXT,
+    FOREIGN KEY (folderId) REFERENCES promptsLibraryFolders(id) ON DELETE CASCADE
+);
+CREATE TABLE promptsVersions (
+    id TEXT PRIMARY KEY NOT NULL,
+    promptId TEXT NOT NULL,
+    versionNumber INTEGER NOT NULL,
+    title TEXT NOT NULL,
+    text TEXT NOT NULL,
+    variables TEXT,
+    changelog TEXT,
+    createdAt TEXT DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    extras TEXT,
+    FOREIGN KEY (promptId) REFERENCES promptsLibraryPrompts(id) ON DELETE CASCADE
+);
+CREATE TABLE languageModelsProviders (
+    id TEXT PRIMARY KEY NOT NULL,
+    name TEXT NOT NULL,
+    providerId TEXT NOT NULL,
+    credentials TEXT,
+    models TEXT,
+    extras TEXT,
+    createdAt TEXT DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    logo TEXT
+);
+CREATE TABLE languageModelConfigs (
+    id TEXT PRIMARY KEY NOT NULL,
+    providerId TEXT NOT NULL,
+    modelId TEXT NOT NULL,
+    value TEXT,
+    extras TEXT,
+    logo TEXT,
+    FOREIGN KEY (providerId) REFERENCES languageModelsProviders(id) ON DELETE CASCADE
+);
+CREATE TABLE tools (
+    id TEXT PRIMARY KEY NOT NULL,
+    toolId TEXT NOT NULL,
+    name TEXT NOT NULL,
+    config TEXT NOT NULL,
+    notes TEXT,
+    provider TEXT DEFAULT 'mcp',
+    compatibility TEXT,
+    colorIcon TEXT,
+    extras TEXT,
+    createdAt TEXT DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    folderId TEXT
+);
+CREATE TABLE skill_preferences (
+    id TEXT PRIMARY KEY NOT NULL,
+    skillId TEXT NOT NULL,
+    isEnabled TEXT DEFAULT 'true' NOT NULL,
+    folderId TEXT NOT NULL,
+    extras TEXT,
+    createdAt TEXT DEFAULT CURRENT_TIMESTAMP NOT NULL
+);
+CREATE TABLE toolsets (
+    id TEXT PRIMARY KEY NOT NULL,
+    name TEXT NOT NULL,
+    priority REAL NOT NULL DEFAULT 0,
+    notes TEXT,
+    extras TEXT,
+    createdAt TEXT DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    folderId TEXT
+);
+CREATE VIRTUAL TABLE search USING fts5(extras, entity, content, entityId);
+CREATE TRIGGER after_insert_promptsLibrary
+    AFTER INSERT ON promptsLibraryPrompts
+    FOR EACH ROW
+BEGIN
+    INSERT INTO search (entity, entityId, content, extras)
+    VALUES (
+        'promptsLibraryPrompts',
+        NEW.id,
+        NEW.title || ' ' || NEW.text,
+        json_object('title', NEW.title)
+    );
+END;
+INSERT INTO personaFolders (id, name) VALUES (
+    '__MSTY__PERSONA__ORPHANAGE__FOLDER__',
+    'Misc'
+);
+"""
+
+
 from src.install import (
     build_modelfile,
     create_payload,
@@ -64,44 +220,7 @@ def admin_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 def studio_fixture(tmp_path: Path) -> Path:
     db_path = tmp_path / "00000000"
     conn = sqlite3.connect(str(db_path))
-    conn.executescript(
-        """
-        CREATE TABLE personas (
-            id TEXT PRIMARY KEY,
-            name TEXT NOT NULL,
-            description TEXT,
-            systemPrompt TEXT NOT NULL,
-            partialModelInfo TEXT,
-            createdAt TEXT DEFAULT CURRENT_TIMESTAMP
-        );
-        CREATE TABLE tools (
-            id TEXT PRIMARY KEY,
-            toolId TEXT NOT NULL,
-            name TEXT NOT NULL,
-            config TEXT NOT NULL,
-            provider TEXT,
-            createdAt TEXT DEFAULT CURRENT_TIMESTAMP
-        );
-        CREATE TABLE promptsLibraryPrompts (
-            id TEXT PRIMARY KEY,
-            name TEXT,
-            prompt TEXT,
-            createdAt TEXT DEFAULT CURRENT_TIMESTAMP
-        );
-        CREATE TABLE skill_preferences (
-            id TEXT PRIMARY KEY,
-            name TEXT,
-            content TEXT,
-            createdAt TEXT DEFAULT CURRENT_TIMESTAMP
-        );
-        CREATE TABLE toolsets (
-            id TEXT PRIMARY KEY,
-            name TEXT,
-            tools TEXT,
-            createdAt TEXT DEFAULT CURRENT_TIMESTAMP
-        );
-        """
-    )
+    conn.executescript(STUDIO_29_SCHEMA)
     conn.commit()
     conn.close()
     return db_path
@@ -584,10 +703,12 @@ class TestWrites:
         conn = sqlite3.connect(str(studio_fixture))
         assert conn.execute("SELECT name FROM personas").fetchone()[0] == "Research"
         assert conn.execute("SELECT COUNT(*) FROM tools").fetchone()[0] == 0
-        assert conn.execute("SELECT name FROM promptsLibraryPrompts").fetchone()[0] == "Summarise"
+        assert conn.execute("SELECT COUNT(*) FROM promptsLibraryPrompts").fetchone()[0] == 0
         assert conn.execute("SELECT COUNT(*) FROM skill_preferences").fetchone()[0] == 0
         assert conn.execute("SELECT COUNT(*) FROM toolsets").fetchone()[0] == 0
         conn.close()
+        assert "prompts" in result["skipped"]
+        assert any("promptsLibraryFolders" in note for note in result.get("notes") or [])
 
     def test_malicious_tool_command_is_refused(self, admin_home, studio_fixture, monkeypatch):
         monkeypatch.setenv("MSTY_ALLOW_STUDIO_WRITES", "1")
@@ -648,6 +769,162 @@ class TestWrites:
         conn = sqlite3.connect(str(studio_fixture))
         assert conn.execute("SELECT COUNT(*) FROM skill_preferences").fetchone()[0] == 0
         conn.close()
+
+    def test_persona_insert_matches_studio_schema(self, admin_home, studio_fixture, monkeypatch):
+        monkeypatch.setenv("MSTY_ALLOW_STUDIO_WRITES", "1")
+        result = writes.apply_pack(
+            writes.persona_pack("Fixture Persona", "Be brief.", "llama3.2:3b"),
+            confirm=True,
+            database_path=str(studio_fixture),
+            imports_root=admin_home / "imports",
+            backup_root=admin_home / "backups",
+        )
+        assert result["wrote"] is True
+        conn = sqlite3.connect(str(studio_fixture))
+        persona = conn.execute(
+            "SELECT id, name, folderId, colorIcon, extras, activeVersionId, "
+            "partialModelInfo, length(id) AS id_len FROM personas"
+        ).fetchone()
+        version = conn.execute(
+            "SELECT id, personaId, versionNumber, name, systemPrompt, colorIcon, extras "
+            "FROM personaVersions"
+        ).fetchone()
+        conn.close()
+        assert persona[1] == "Fixture Persona"
+        assert persona[2] == writes.ORPHANAGE_FOLDER_ID
+        assert persona[3] == '{"name":"tabler:user-scan"}'
+        assert persona[4] == "{}"
+        assert persona[5] == persona[0]
+        assert persona[6] is None
+        assert persona[7] == 26
+        assert version[0] == version[1] == persona[0]
+        assert version[2] == 1
+        assert version[3] == "Fixture Persona"
+        assert version[4] == "Be brief."
+        assert version[5] == persona[3]
+        assert version[6] == "{}"
+        assert any("partialModelInfo left null" in note for note in result.get("notes") or [])
+
+    def test_duplicate_persona_name_is_refused(self, admin_home, studio_fixture, monkeypatch):
+        monkeypatch.setenv("MSTY_ALLOW_STUDIO_WRITES", "1")
+        first = writes.apply_pack(
+            writes.persona_pack("Unique Name", "First.", "llama3.2:3b"),
+            confirm=True,
+            database_path=str(studio_fixture),
+            imports_root=admin_home / "imports",
+            backup_root=admin_home / "backups",
+        )
+        assert first["wrote"] is True
+        second = writes.apply_pack(
+            writes.persona_pack("Unique Name", "Second.", "llama3.2:3b"),
+            confirm=True,
+            database_path=str(studio_fixture),
+            imports_root=admin_home / "imports",
+            backup_root=admin_home / "backups",
+        )
+        assert second["wrote"] is False
+        assert second["status"] == "refused"
+        assert "already exists" in second["error"]
+        conn = sqlite3.connect(str(studio_fixture))
+        assert conn.execute("SELECT COUNT(*) FROM personas").fetchone()[0] == 1
+        assert conn.execute("SELECT systemPrompt FROM personas").fetchone()[0] == "First."
+        conn.close()
+
+    def test_prompts_without_folder_are_pack_only(
+        self, admin_home, studio_fixture, monkeypatch
+    ):
+        monkeypatch.setenv("MSTY_ALLOW_STUDIO_WRITES", "1")
+        result = writes.apply_pack(
+            {"prompts": [{"name": "Summarise", "prompt": "Summarise this."}]},
+            confirm=True,
+            database_path=str(studio_fixture),
+            imports_root=admin_home / "imports",
+            backup_root=admin_home / "backups",
+        )
+        assert result["wrote"] is False
+        assert result["status"] == "pack_only"
+        assert "promptsLibraryFolders" in result["error"]
+        conn = sqlite3.connect(str(studio_fixture))
+        assert conn.execute("SELECT COUNT(*) FROM promptsLibraryPrompts").fetchone()[0] == 0
+        conn.close()
+
+    def test_prompt_insert_with_folder_writes_version(
+        self, admin_home, studio_fixture, monkeypatch
+    ):
+        monkeypatch.setenv("MSTY_ALLOW_STUDIO_WRITES", "1")
+        conn = sqlite3.connect(str(studio_fixture))
+        conn.execute(
+            "INSERT INTO promptsLibraryFolders (id, name) VALUES ('folder-1', 'Inbox')"
+        )
+        conn.commit()
+        conn.close()
+        result = writes.apply_pack(
+            {"prompts": [{"name": "Summarise", "prompt": "Summarise this."}]},
+            confirm=True,
+            database_path=str(studio_fixture),
+            imports_root=admin_home / "imports",
+            backup_root=admin_home / "backups",
+        )
+        assert result["wrote"] is True
+        conn = sqlite3.connect(str(studio_fixture))
+        prompt = conn.execute(
+            "SELECT id, title, text, folderId, activeVersionId FROM promptsLibraryPrompts"
+        ).fetchone()
+        version = conn.execute(
+            "SELECT id, promptId, versionNumber, title, text FROM promptsVersions"
+        ).fetchone()
+        search_hits = conn.execute(
+            "SELECT entity FROM search WHERE entityId = ?", (prompt[0],)
+        ).fetchall()
+        conn.close()
+        assert prompt[1] == "Summarise"
+        assert prompt[2] == "Summarise this."
+        assert prompt[3] == "folder-1"
+        assert prompt[4] == prompt[0]
+        assert version[0] == version[1] == prompt[0]
+        assert version[2] == 1
+        assert search_hits
+
+    def test_partial_model_info_when_config_maps_provider(
+        self, admin_home, studio_fixture, monkeypatch
+    ):
+        monkeypatch.setenv("MSTY_ALLOW_STUDIO_WRITES", "1")
+        conn = sqlite3.connect(str(studio_fixture))
+        conn.execute(
+            "INSERT INTO languageModelsProviders (id, name, providerId) "
+            "VALUES ('prov-1', 'Msty Local AI', 'mstyLocal')"
+        )
+        conn.execute(
+            "INSERT INTO languageModelConfigs (id, providerId, modelId) "
+            "VALUES ('cfg-1', 'prov-1', 'llama3.2:3b')"
+        )
+        conn.commit()
+        conn.close()
+        result = writes.apply_pack(
+            writes.persona_pack("Mapped", "Hello.", "llama3.2:3b"),
+            confirm=True,
+            database_path=str(studio_fixture),
+            imports_root=admin_home / "imports",
+            backup_root=admin_home / "backups",
+        )
+        assert result["wrote"] is True
+        conn = sqlite3.connect(str(studio_fixture))
+        info = conn.execute("SELECT partialModelInfo FROM personas").fetchone()[0]
+        conn.close()
+        assert json.loads(info) == {"id": "llama3.2:3b", "providerId": "prov-1"}
+
+    def test_pack_names_are_unique_within_the_same_second(
+        self, admin_home, studio_fixture
+    ):
+        names = []
+        for index in range(8):
+            path = writes.save_import_pack(
+                {"n": index}, dest_dir=admin_home / "imports"
+            )
+            names.append(path.name)
+            assert path.is_file()
+        assert len(set(names)) == 8
+        assert len(names) == len(set(str(admin_home / "imports" / n) for n in names))
 
     def test_sqlite_readonly_uri_uses_as_uri(self, tmp_path):
         db_path = tmp_path / "studio.db"
@@ -712,7 +989,9 @@ class TestWrites:
                 confirm=True,
             )
         )
-        assert pack["wrote"] is True
+        assert pack["wrote"] is False
+        assert pack["status"] == "pack_only"
+        assert "promptsLibraryFolders" in (pack.get("error") or "")
         assert HOOK_API_NOTE in pack["hook_api"]
 
     def test_is_process_running_fails_closed(self, monkeypatch):

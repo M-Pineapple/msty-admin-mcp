@@ -33,6 +33,20 @@ def secure_write(path: Path, data: Union[str, bytes]) -> Path:
     return path
 
 
+def secure_create(path: Path, data: Union[str, bytes]) -> Path:
+    """Create ``path`` as mode 0600. Raises FileExistsError if it already exists."""
+    secure_mkdir(path.parent)
+    raw = data.encode("utf-8") if isinstance(data, str) else data
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | _NOFOLLOW
+    fd = os.open(str(path), flags, 0o600)
+    try:
+        os.write(fd, raw)
+        os.fchmod(fd, 0o600)
+    finally:
+        os.close(fd)
+    return path
+
+
 def is_owner_only(path: Path) -> bool:
     mode = path.stat().st_mode
     return stat.S_IMODE(mode) & (stat.S_IRWXG | stat.S_IRWXO) == 0

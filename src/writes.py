@@ -10,13 +10,14 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence
 
 from src.paths import detect_msty_installation, is_process_running
-from src.safe_io import secure_mkdir, secure_write
+from src.safe_io import secure_create, secure_mkdir, secure_write
 
 TABLE_FOR_KIND = {
     "personas": "personas",
@@ -33,10 +34,23 @@ DB_KINDS = frozenset({"personas", "prompts"})
 LAUNCH_KEYS = frozenset({"command", "args", "env", "executable", "bin", "script", "stdio", "cmd"})
 WRITES_ENV = "MSTY_ALLOW_STUDIO_WRITES"
 
-REQUIRED_COLUMNS = {
-    "personas": ("name", "systemPrompt"),
-    "tools": ("name",),
-}
+ORPHANAGE_FOLDER_ID = "__MSTY__PERSONA__ORPHANAGE__FOLDER__"
+DEFAULT_COLOR_ICON = '{"name":"tabler:user-scan"}'
+DEFAULT_EXTRAS = "{}"
+_CROCKFORD = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
+
+NO_PERSONA_FOLDER = (
+    "No personaFolders row. Personas are saved as a JSON pack only. "
+    "This MCP does not create folders."
+)
+NO_PROMPT_FOLDER = (
+    "No promptsLibraryFolders row. Prompts are saved as a JSON pack only. "
+    "This MCP does not create folders. Add a folder in Msty, then retry."
+)
+
+
+class DuplicatePersonaName(ValueError):
+    """Raised when a persona name is already in the Studio database."""
 
 ENV_OFF_NOTE = (
     "Studio database writes are off. Set MSTY_ALLOW_STUDIO_WRITES=1 in the MCP "
@@ -70,20 +84,39 @@ def studio_writes_allowed() -> bool:
     return os.environ.get(WRITES_ENV, "") == "1"
 
 
-def _now_stamp() -> str:
-    return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+def _unique_stamp() -> str:
+    now = datetime.now(timezone.utc)
+    return now.strftime("%Y%m%dT%H%M%S") + f"{now.microsecond:06d}Z-{uuid.uuid4().hex[:8]}"
 
 
 def _iso_now() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
 
 
+def new_ulid() -> str:
+    """26-character Crockford ULID. Matches Studio 2.9 persona ids."""
+    timestamp_ms = int(time.time() * 1000) & ((1 << 48) - 1)
+    entropy = int.from_bytes(os.urandom(10), "big")
+    value = (timestamp_ms << 80) | entropy
+    chars = ["0"] * 26
+    for index in range(25, -1, -1):
+        chars[index] = _CROCKFORD[value & 31]
+        value >>= 5
+    return "".join(chars)
+
+
 def save_import_pack(pack: Dict[str, Any], dest_dir: Optional[Path] = None) -> Path:
     folder = dest_dir or imports_dir()
     secure_mkdir(folder)
-    path = folder / f"pack-{_now_stamp()}.json"
-    secure_write(path, json.dumps(pack, indent=2, default=str) + "\n")
-    return path
+    payload = json.dumps(pack, indent=2, default=str) + "\n"
+    last_error: Optional[Exception] = None
+    for _ in range(8):
+        path = folder / f"pack-{_unique_stamp()}.json"
+        try:
+            return secure_create(path, payload)
+        except FileExistsError as exc:
+            last_error = exc
+    raise RuntimeError("could not allocate a unique import pack name") from last_error
 
 
 def resolve_database_path(explicit: Optional[str] = None) -> Optional[Path]:
@@ -128,7 +161,7 @@ def backup_database(database_path: Path, dest_dir: Optional[Path] = None) -> Pat
     """Copy the logical SQLite database, including WAL, into a 0600 file."""
     folder = dest_dir or backups_dir()
     secure_mkdir(folder)
-    dest = folder / f"{database_path.name}-{_now_stamp()}.bak"
+    dest = folder / f"{database_path.name}-{_unique_stamp()}.bak"
     secure_write(dest, b"")
     src = sqlite3.connect(sqlite_readonly_uri(database_path), uri=True)
     try:
@@ -188,28 +221,206 @@ def launch_keys_in(obj: Any) -> List[str]:
     return found
 
 
-def _prepare_row(kind: str, item: Dict[str, Any], columns: Sequence[str]) -> Dict[str, Any]:
-    row = dict(item)
-    if "id" not in row or not row["id"]:
-        row["id"] = str(uuid.uuid4())
-    if "createdAt" in columns and not row.get("createdAt"):
-        row["createdAt"] = _iso_now()
-    if kind == "personas":
-        if "systemPrompt" not in row and row.get("system_prompt"):
-            row["systemPrompt"] = row["system_prompt"]
-        if "systemPrompt" not in row:
-            raise ValueError("persona needs systemPrompt")
-        if row.get("model") and "partialModelInfo" in columns and "partialModelInfo" not in row:
-            row["partialModelInfo"] = json.dumps({"model": row["model"]})
-    if kind == "prompts":
-        if "prompt" not in row and row.get("text"):
-            row["prompt"] = row["text"]
-    allowed = {key: row[key] for key in row if key in columns}
-    required = REQUIRED_COLUMNS.get(kind, ())
-    missing = [col for col in required if col in columns and not allowed.get(col)]
-    if missing:
-        raise ValueError(f"{kind} missing required columns: {', '.join(missing)}")
-    return allowed
+def _json_text(value: Any, default: Optional[str] = None) -> Optional[str]:
+    if value is None:
+        return default
+    if isinstance(value, (dict, list)):
+        return json.dumps(value, separators=(",", ":"))
+    text = str(value)
+    return text if text else default
+
+
+def _model_listed(parsed: Any, model: str) -> bool:
+    if isinstance(parsed, dict):
+        return model in parsed
+    if isinstance(parsed, list):
+        for item in parsed:
+            if item == model:
+                return True
+            if isinstance(item, dict) and item.get("id") == model:
+                return True
+    return False
+
+
+def lookup_model_provider_id(conn: sqlite3.Connection, model: str) -> Optional[str]:
+    """Return languageModelsProviders.id for a model, or None if unmapped.
+
+    Studio stores partialModelInfo.providerId as languageModelsProviders.id.
+    languageModelConfigs is (providerId, modelId). providers.models is a JSON
+    list or object when present. The live 2.9.12 copy had empty configs and
+    NULL models, so a typical Local AI name stays unmapped.
+    """
+    cleaned = (model or "").strip()
+    if not cleaned:
+        return None
+    if _table_exists(conn, "languageModelConfigs"):
+        row = conn.execute(
+            "SELECT providerId FROM languageModelConfigs WHERE modelId = ? LIMIT 1",
+            (cleaned,),
+        ).fetchone()
+        if row and row[0]:
+            return str(row[0])
+    if _table_exists(conn, "languageModelsProviders"):
+        for rec in conn.execute("SELECT id, models FROM languageModelsProviders"):
+            raw = rec[1]
+            if not raw:
+                continue
+            try:
+                parsed = json.loads(raw)
+            except (TypeError, json.JSONDecodeError):
+                continue
+            if _model_listed(parsed, cleaned):
+                return str(rec[0])
+    return None
+
+
+def _first_folder_id(
+    conn: sqlite3.Connection, table: str, preferred_id: Optional[str] = None
+) -> Optional[str]:
+    if not _table_exists(conn, table):
+        return None
+    columns = table_columns(conn, table)
+    if "id" not in columns:
+        return None
+    if preferred_id:
+        row = conn.execute(
+            f'SELECT id FROM "{table}" WHERE id = ? LIMIT 1', (preferred_id,)
+        ).fetchone()
+        if row:
+            return str(row[0])
+    if "createdAt" in columns:
+        row = conn.execute(
+            f'SELECT id FROM "{table}" ORDER BY createdAt ASC, id ASC LIMIT 1'
+        ).fetchone()
+    else:
+        row = conn.execute(f'SELECT id FROM "{table}" ORDER BY id ASC LIMIT 1').fetchone()
+    return str(row[0]) if row else None
+
+
+def resolve_persona_folder_id(conn: sqlite3.Connection) -> Optional[str]:
+    return _first_folder_id(conn, "personaFolders", ORPHANAGE_FOLDER_ID)
+
+
+def resolve_prompt_folder_id(conn: sqlite3.Connection) -> Optional[str]:
+    return _first_folder_id(conn, "promptsLibraryFolders")
+
+
+def _row_for_columns(row: Dict[str, Any], columns: Sequence[str]) -> Dict[str, Any]:
+    return {key: value for key, value in row.items() if key in columns}
+
+
+def _insert_persona(
+    conn: sqlite3.Connection, item: Dict[str, Any], notes: List[str]
+) -> str:
+    columns = table_columns(conn, "personas")
+    name = str(item.get("name") or "").strip()
+    system = item.get("systemPrompt") or item.get("system_prompt")
+    if not name:
+        raise ValueError("persona needs name")
+    if not system:
+        raise ValueError("persona needs systemPrompt")
+    if conn.execute("SELECT 1 FROM personas WHERE name = ? LIMIT 1", (name,)).fetchone():
+        raise DuplicatePersonaName(
+            f"persona name {name!r} already exists. Choose a different name."
+        )
+    folder_id = resolve_persona_folder_id(conn)
+    if not folder_id:
+        raise RuntimeError("persona folder missing")
+    persona_id = str(item.get("id") or new_ulid())
+    created = item.get("createdAt") or _iso_now()
+    color = _json_text(item.get("colorIcon"), DEFAULT_COLOR_ICON)
+    extras = _json_text(item.get("extras"), DEFAULT_EXTRAS)
+    model = str(item.get("model") or "").strip()
+    partial = item.get("partialModelInfo")
+    if partial:
+        partial_text = _json_text(partial)
+    elif model and "partialModelInfo" in columns:
+        provider_id = lookup_model_provider_id(conn, model)
+        if provider_id:
+            partial_text = json.dumps(
+                {"id": model, "providerId": provider_id}, separators=(",", ":")
+            )
+        else:
+            partial_text = None
+            notes.append(
+                f"partialModelInfo left null for persona {name!r}: no "
+                f"languageModelConfigs.modelId or languageModelsProviders.models "
+                f"entry for {model!r}."
+            )
+    else:
+        partial_text = None
+    persona_row = {
+        "id": persona_id,
+        "name": name,
+        "systemPrompt": system,
+        "folderId": folder_id,
+        "colorIcon": color,
+        "extras": extras,
+        "activeVersionId": persona_id,
+        "createdAt": created,
+        "description": item.get("description"),
+        "partialModelInfo": partial_text,
+    }
+    insert_row(conn, "personas", _row_for_columns(persona_row, columns))
+    if _table_exists(conn, "personaVersions"):
+        version_columns = table_columns(conn, "personaVersions")
+        version_row = {
+            "id": persona_id,
+            "personaId": persona_id,
+            "versionNumber": 1,
+            "name": name,
+            "systemPrompt": system,
+            "colorIcon": color,
+            "extras": extras,
+            "partialModelInfo": partial_text,
+            "description": item.get("description"),
+            "createdAt": created,
+        }
+        insert_row(
+            conn, "personaVersions", _row_for_columns(version_row, version_columns)
+        )
+    return persona_id
+
+
+def _insert_prompt(conn: sqlite3.Connection, item: Dict[str, Any]) -> str:
+    columns = table_columns(conn, "promptsLibraryPrompts")
+    title = str(item.get("title") or item.get("name") or "").strip()
+    text = item.get("text") or item.get("prompt")
+    if not title:
+        raise ValueError("prompt needs title")
+    if not text:
+        raise ValueError("prompt needs text")
+    folder_id = resolve_prompt_folder_id(conn)
+    if not folder_id:
+        raise RuntimeError("prompt folder missing")
+    prompt_id = str(item.get("id") or new_ulid())
+    created = item.get("createdAt") or _iso_now()
+    extras = _json_text(item.get("extras"), DEFAULT_EXTRAS)
+    prompt_row = {
+        "id": prompt_id,
+        "title": title,
+        "text": text,
+        "folderId": folder_id,
+        "activeVersionId": prompt_id,
+        "createdAt": created,
+        "extras": extras,
+    }
+    insert_row(conn, "promptsLibraryPrompts", _row_for_columns(prompt_row, columns))
+    if _table_exists(conn, "promptsVersions"):
+        version_columns = table_columns(conn, "promptsVersions")
+        version_row = {
+            "id": prompt_id,
+            "promptId": prompt_id,
+            "versionNumber": 1,
+            "title": title,
+            "text": text,
+            "createdAt": created,
+            "extras": extras,
+        }
+        insert_row(
+            conn, "promptsVersions", _row_for_columns(version_row, version_columns)
+        )
+    return prompt_id
 
 
 def insert_row(conn: sqlite3.Connection, table: str, row: Dict[str, Any]) -> None:
@@ -304,6 +515,7 @@ def apply_pack(
     backup = backup_database(db_path, dest_dir=backup_root)
     applied: Dict[str, List[str]] = {}
     skipped: List[str] = list(pack_only_present)
+    notes: List[str] = []
     conn = connect_writable(db_path)
     try:
         conn.execute("BEGIN IMMEDIATE")
@@ -315,16 +527,60 @@ def apply_pack(
             if not _table_exists(conn, table):
                 skipped.append(f"{kind} (table {table} missing)")
                 continue
-            columns = table_columns(conn, table)
             ids: List[str] = []
-            for item in items:
-                if not isinstance(item, dict):
-                    raise ValueError(f"{kind} entries must be objects")
-                row = _prepare_row(kind, item, columns)
-                insert_row(conn, table, row)
-                ids.append(str(row.get("id")))
-            applied[kind] = ids
+            if kind == "personas":
+                if not resolve_persona_folder_id(conn):
+                    skipped.append("personas")
+                    notes.append(NO_PERSONA_FOLDER)
+                    continue
+                for item in items:
+                    if not isinstance(item, dict):
+                        raise ValueError("personas entries must be objects")
+                    ids.append(_insert_persona(conn, item, notes))
+            elif kind == "prompts":
+                if not resolve_prompt_folder_id(conn):
+                    skipped.append("prompts")
+                    notes.append(NO_PROMPT_FOLDER)
+                    continue
+                for item in items:
+                    if not isinstance(item, dict):
+                        raise ValueError("prompts entries must be objects")
+                    ids.append(_insert_prompt(conn, item))
+            if ids:
+                applied[kind] = ids
         conn.execute("COMMIT")
+    except DuplicatePersonaName as exc:
+        try:
+            conn.execute("ROLLBACK")
+        except sqlite3.Error:
+            pass
+        conn.close()
+        return {
+            "status": "refused",
+            "wrote": False,
+            "pack_path": str(saved),
+            "backup_path": str(backup),
+            "error": str(exc),
+        }
+    except sqlite3.IntegrityError as exc:
+        try:
+            conn.execute("ROLLBACK")
+        except sqlite3.Error:
+            pass
+        conn.close()
+        message = str(exc)
+        refused = "unique" in message.lower() or "not null" in message.lower()
+        return {
+            "status": "refused" if refused else "error",
+            "wrote": False,
+            "pack_path": str(saved),
+            "backup_path": str(backup),
+            "error": (
+                "persona name already exists. Choose a different name."
+                if "unique" in message.lower()
+                else message
+            ),
+        }
     except sqlite3.OperationalError as exc:
         try:
             conn.execute("ROLLBACK")
@@ -356,7 +612,7 @@ def apply_pack(
         }
     conn.close()
     wrote = bool(applied)
-    return {
+    result_out: Dict[str, Any] = {
         "status": "applied" if wrote else "pack_only",
         "wrote": wrote,
         "pack_path": str(saved),
@@ -367,6 +623,11 @@ def apply_pack(
         "counts": {k: len(v) for k, v in applied.items()},
         "note": PACK_ONLY_NOTE,
     }
+    if notes:
+        result_out["notes"] = notes
+        if not wrote and any(NO_PROMPT_FOLDER in note or NO_PERSONA_FOLDER in note for note in notes):
+            result_out["error"] = notes[0]
+    return result_out
 
 
 def persona_pack(name: str, system_prompt: str, model: str) -> Dict[str, Any]:
