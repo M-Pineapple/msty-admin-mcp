@@ -25,7 +25,7 @@ Hybrid local and cloud tools on top of 6.1.5.
 
 - `get_hardware_profile`: chip, cores, RAM, GPU/VRAM, Apple Silicon generation (sysctl and system_profiler on macOS).
 - Hardware-aware `recommend_model` with a Q4 catalog and a memory budget (about 60% of unified RAM).
-- `install_model` (`/api/pull`) and `set_model_settings` (Ollama Modelfile `/api/create`), both gated on `confirm=true`.
+- `install_model` (`/api/pull`) and `set_model_settings` (Ollama `/api/create`), both gated on `confirm=true`.
 - `import_studio_pack` for personas, prompts, skills, toolsets and tools.
 - `escalate_if_needed`. `ask_frontier` accepts `provider` of `cursor`, `grok`, or `claude`.
 - Bloom MCP tools call `BloomEvaluator.evaluate()` and persist history. They invent no score.
@@ -35,6 +35,10 @@ Hybrid local and cloud tools on top of 6.1.5.
 - `generate_persona` and `import_studio_pack` insert personas and prompts only with `confirm=true` and `MSTY_ALLOW_STUDIO_WRITES=1`. Tools, toolsets and skills are JSON-pack only. JSON packs always land under `~/.msty-admin/imports/`.
 - `query_local_ai_service` is allow-listed. Pull and create are no longer a generic side door.
 - README hybrid section and tool list match the 61 tools that exist.
+
+### Fixed
+
+- `set_model_settings` posts the current Ollama `/api/create` body (`model`, `from`, `parameters`, `system`) instead of the retired `name` and `modelfile` fields, which returned HTTP 400 on Ollama 0.20.3. `install_model` posts `model` on `/api/pull`. The Modelfile text stays in the preview response only.
 
 ## v6.1.5 — 2026-10-15
 

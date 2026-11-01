@@ -230,7 +230,7 @@ def pull_model(
         "/api/pull",
         port=port,
         method="POST",
-        data={"name": cleaned, "stream": False},
+        data=pull_payload(cleaned),
         timeout=limit,
     )
     if not started.get("success"):
@@ -256,6 +256,39 @@ def pull_model(
         "pull": started.get("data"),
         "error": None if present else "pull finished but the model is not in /api/tags yet",
     }
+
+
+def pull_payload(name: str) -> Dict[str, Any]:
+    """Ollama /api/pull body. Current API uses ``model``, not ``name``."""
+    return {"model": name, "stream": False}
+
+
+def create_payload(
+    base_model: str,
+    variant_name: str,
+    temperature: Optional[float] = None,
+    top_p: Optional[float] = None,
+    num_ctx: Optional[int] = None,
+    system: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Ollama /api/create body. Current API uses ``model`` and ``from``, not a Modelfile."""
+    body: Dict[str, Any] = {
+        "model": variant_name,
+        "from": base_model,
+    }
+    parameters: Dict[str, Any] = {}
+    if temperature is not None:
+        parameters["temperature"] = temperature
+    if top_p is not None:
+        parameters["top_p"] = top_p
+    if num_ctx is not None:
+        parameters["num_ctx"] = int(num_ctx)
+    if parameters:
+        body["parameters"] = parameters
+    if system and system.strip():
+        body["system"] = system.strip()
+    body["stream"] = False
+    return body
 
 
 def build_modelfile(
@@ -293,7 +326,7 @@ def create_variant(
     timeout: Optional[int] = None,
     request_fn: Optional[RequestFn] = None,
 ) -> Dict[str, Any]:
-    """POST /api/create with a Modelfile. Prefer this over writing Studio SQLite."""
+    """POST /api/create with structured fields. Modelfile text is preview only."""
     base = (base_model or "").strip()
     variant = (variant_name or "").strip()
     name_error = validate_model_name(base, "base_model") or validate_model_name(
@@ -302,6 +335,7 @@ def create_variant(
     if name_error:
         return {"success": False, "error": name_error, "wrote": False}
     modelfile = build_modelfile(base, temperature, top_p, num_ctx, system)
+    payload = create_payload(base, variant, temperature, top_p, num_ctx, system)
     if not confirm:
         return {
             "success": True,
@@ -345,7 +379,7 @@ def create_variant(
         "/api/create",
         port=port,
         method="POST",
-        data={"name": variant, "modelfile": modelfile, "stream": False},
+        data=payload,
         timeout=limit,
     )
     if not created.get("success"):

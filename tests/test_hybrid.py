@@ -14,12 +14,14 @@ from src.hardware import _binary, catalog, detect_hardware
 from src.hardware.catalog import memory_budget_gb, recommend
 from src.install import (
     build_modelfile,
+    create_payload,
     create_variant,
     looks_like_local_path,
     leftover_scheme,
     normalise_model_name,
     passthrough_allowed,
     pull_model,
+    pull_payload,
     validate_model_name,
 )
 from src.paths import is_process_running
@@ -242,6 +244,33 @@ class TestInstallAndAllowList:
         assert applied["installed"] is True
         assert "/api/pull" in calls
 
+    def test_pull_sends_model_field_not_name(self):
+        captured = {}
+
+        def fake_request(endpoint, port=None, method="GET", data=None, timeout=10):
+            if endpoint == "/api/pull":
+                captured["data"] = data
+                if "modelfile" in (data or {}) or (
+                    "name" in (data or {}) and "model" not in (data or {})
+                ):
+                    return {
+                        "success": False,
+                        "status": 400,
+                        "error": '{"error":"missing model"}',
+                    }
+                return {"success": True, "data": {"status": "success"}}
+            if endpoint == "/api/tags":
+                return {"success": True, "data": {"models": [{"name": "llama3.2:3b"}]}}
+            return {"success": False, "error": "no"}
+
+        result = pull_model(
+            "llama3.2:3b", confirm=True, request_fn=fake_request, sleeper=lambda _s: None
+        )
+        assert result["wrote"] is True
+        assert captured["data"] == {"model": "llama3.2:3b", "stream": False}
+        assert pull_payload("llama3.2:3b") == captured["data"]
+        assert "name" not in captured["data"]
+
     def test_mlx_has_no_pull(self):
         result = pull_model("qwen", confirm=True, service="mlx")
         assert result["success"] is False
@@ -259,6 +288,67 @@ class TestInstallAndAllowList:
         assert result["wrote"] is False
         assert "PARAMETER temperature 0.2" in result["modelfile"]
         assert "FROM llama3.2:3b" in result["modelfile"]
+
+    def test_create_variant_sends_structured_body_not_modelfile(self):
+        captured = {}
+
+        def fake_request(endpoint, port=None, method="GET", data=None, timeout=10):
+            if endpoint == "/api/tags":
+                return {"success": True, "data": {"models": [{"name": "llama3.2:3b"}]}}
+            if endpoint == "/api/create":
+                captured["data"] = data
+                if "modelfile" in (data or {}) or "name" in (data or {}):
+                    return {
+                        "success": False,
+                        "status": 400,
+                        "error": '{"error":"neither \'from\' or \'files\' was specified"}',
+                    }
+                if data and data.get("model") and data.get("from"):
+                    return {"success": True, "data": {"status": "success"}}
+                return {
+                    "success": False,
+                    "status": 400,
+                    "error": '{"error":"neither \'from\' or \'files\' was specified"}',
+                }
+            return {"success": False}
+
+        result = create_variant(
+            "llama3.2:3b",
+            "llama-tuned",
+            temperature=0.2,
+            top_p=0.9,
+            num_ctx=8192,
+            system="Be brief.",
+            confirm=True,
+            request_fn=fake_request,
+        )
+        expected = {
+            "model": "llama-tuned",
+            "from": "llama3.2:3b",
+            "parameters": {"temperature": 0.2, "top_p": 0.9, "num_ctx": 8192},
+            "system": "Be brief.",
+            "stream": False,
+        }
+        assert result["wrote"] is True
+        assert captured["data"] == expected
+        assert create_payload(
+            "llama3.2:3b",
+            "llama-tuned",
+            temperature=0.2,
+            top_p=0.9,
+            num_ctx=8192,
+            system="Be brief.",
+        ) == expected
+        assert "modelfile" not in captured["data"]
+        assert "name" not in captured["data"]
+        assert "FROM llama3.2:3b" in result["modelfile"]
+
+    def test_create_payload_omits_unset_parameters_and_system(self):
+        assert create_payload("llama3.2:3b", "llama-tuned") == {
+            "model": "llama-tuned",
+            "from": "llama3.2:3b",
+            "stream": False,
+        }
 
     def test_create_variant_rejects_newline_in_base(self):
         result = create_variant(

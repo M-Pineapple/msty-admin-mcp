@@ -28,7 +28,7 @@ Msty Studio lets you run AI models on your own Mac. Msty Admin MCP connects that
 1. **Recommend.** Your AI reads hardware (chip, RAM, Apple generation) and suggests a Q4 model that fits. Recent Studio usage wins when that model still fits.
 2. **Set up.** `install_model` pulls through Local AI (`/api/pull`) when you pass `confirm=true`. MLX and llama.cpp still download in Msty.
 3. **Test.** Your AI runs calibration prompts, compares models side by side on the same prompt, and can run Bloom behaviour checks such as sycophancy when Bloom and an Anthropic key are present.
-4. **Tune.** `set_model_settings` creates an Ollama Modelfile variant (`/api/create`) with temperature, top_p, context length and system prompt. Pass `confirm=true` to apply.
+4. **Tune.** `set_model_settings` creates an Ollama variant (`/api/create`) with temperature, top_p, context length and system prompt. The Modelfile text is a preview. Pass `confirm=true` to apply.
 5. **Configure Studio.** `generate_persona`, `import_tool_config` and `import_studio_pack` always save a JSON pack under `~/.msty-admin/imports/`. Tools, toolsets and skills stay in that pack for Toolbox import. Personas and prompts insert into Studio only with `confirm=true` and `MSTY_ALLOW_STUDIO_WRITES=1`, after a backup, and they refuse while Studio holds the live DB.
 6. **Work locally.** You chat with your local model in Msty as usual.
 7. **Escalate.** When a question is too hard, the local model calls `ask_frontier` or `escalate_if_needed`. Cursor is the default. Grok (`XAI_API_KEY`) and Claude (`ANTHROPIC_API_KEY`) are also available. Msty Studio has no hook API. The escalation persona is the honest equivalent.
@@ -94,7 +94,7 @@ The server reads chip, RAM and GPU, then recommends a Q4 model that fits, prefer
 
 ### Install and tune local models
 
-`install_model` pulls through Local AI after `confirm=true`. `set_model_settings` creates a Modelfile variant. MLX and llama.cpp still download in Msty. You can also chat with those services from here.
+`install_model` pulls through Local AI after `confirm=true`. `set_model_settings` creates a tuned Ollama variant. MLX and llama.cpp still download in Msty. You can also chat with those services from here.
 
 - "Install llama3.2:3b on Local AI."
 - "Make a cooler variant of that model with temperature 0.2."

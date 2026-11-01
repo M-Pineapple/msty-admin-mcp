@@ -474,7 +474,7 @@ def set_model_settings(
     system: Optional[str] = None,
     confirm: bool = False,
 ) -> str:
-    """Create a tuned Ollama variant via Modelfile /api/create. Requires confirm=true to apply."""
+    """Create a tuned Ollama variant via /api/create. Requires confirm=true to apply."""
     return _json(
         create_variant(
             base_model,
