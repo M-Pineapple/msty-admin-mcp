@@ -825,7 +825,7 @@ class TestWrites:
         assert version["versionNumber"] == 1
         assert version["name"] == "Fixture Persona"
         assert json.loads(version["systemPrompt"]) == prompt_blob
-        assert version["colorIcon"] is None
+        assert version["colorIcon"] == '{"name":"tabler:user-scan"}'
         assert version["description"] is None
         assert version["extras"] == gold_extras
         assert version["partialSelectableAttachments"] == "[]"
@@ -906,7 +906,7 @@ class TestWrites:
         parsed = json.loads(blob)
         assert parsed == {"text": "You replace.", "mode": "replace"}
 
-    def test_persona_description_stays_off_the_version(
+    def test_persona_description_is_mirrored_on_the_version(
         self, admin_home, studio_fixture, monkeypatch
     ):
         monkeypatch.setenv("MSTY_ALLOW_STUDIO_WRITES", "1")
@@ -935,7 +935,7 @@ class TestWrites:
         ).fetchone()[0]
         conn.close()
         assert persona_desc == "A short note."
-        assert version_desc is None
+        assert version_desc == "A short note."
 
     def test_duplicate_persona_name_is_refused(self, admin_home, studio_fixture, monkeypatch):
         monkeypatch.setenv("MSTY_ALLOW_STUDIO_WRITES", "1")
@@ -1092,7 +1092,7 @@ class TestWrites:
         conn.close()
         assert json.loads(info) == {"id": "llama3.2:3b", "providerId": "prov-1"}
         assert version_info[0] is None
-        assert version_info[1] is None
+        assert version_info[1] == '{"name":"tabler:user-scan"}'
         assert version_info[2] is None
 
     def test_pack_names_are_unique_within_the_same_second(
