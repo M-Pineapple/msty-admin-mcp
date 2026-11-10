@@ -13,7 +13,14 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
-from src.paths import detect_msty_installation
+from src.paths import (
+    LAYOUT_UNKNOWN,
+    LAYOUT_UNSUPPORTED,
+    UnsupportedStudioLayout,
+    detect_msty_installation,
+    unknown_version_read_warning,
+    unsupported_layout_message,
+)
 
 # Only allow SELECT / WITH / PRAGMA for arbitrary query tool
 _SAFE_SQL = re.compile(r"^\s*(SELECT|WITH|PRAGMA)\b", re.IGNORECASE | re.DOTALL)
@@ -393,11 +400,32 @@ def names_credential_column(query: str) -> bool:
     return False
 
 
+def with_read_warning(payload: Any) -> Any:
+    """Add a stale-copy warning to a read result when the Studio version is unknown."""
+    if not isinstance(payload, dict):
+        return payload
+    try:
+        status = detect_msty_installation().layout_status
+    except Exception:
+        status = LAYOUT_UNKNOWN
+    if status == LAYOUT_UNKNOWN:
+        payload = dict(payload)
+        payload["warning"] = unknown_version_read_warning()
+    return payload
+
+
 def get_database_path(explicit: Optional[str] = None) -> Optional[Path]:
+    """Resolve the Studio SQLite path for reads.
+
+    Raises UnsupportedStudioLayout on Studio 3.x, even for an explicit path,
+    so no Studio-storage read runs against a layout this release cannot read.
+    """
+    install = detect_msty_installation()
+    if install.layout_status == LAYOUT_UNSUPPORTED:
+        raise UnsupportedStudioLayout(unsupported_layout_message(install.version))
     if explicit:
         path = Path(explicit)
         return path if path.exists() else None
-    install = detect_msty_installation()
     if install.database_path:
         return Path(install.database_path)
     return None

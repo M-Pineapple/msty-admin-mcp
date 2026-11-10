@@ -134,8 +134,9 @@ def test_pull_host_allow_list():
 def test_readme_version_and_tool_count():
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
     changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
-    assert "v6.2.1" in readme
+    assert "v6.2.2" in readme
     assert "54 in total" in readme
+    assert "## v6.2.2 - 2026-11-10" in changelog
     assert "## v6.2.1 - 2026-11-02" in changelog
     assert "`get_server_status`" in changelog
     assert "`get_status(scope=server)`" in changelog

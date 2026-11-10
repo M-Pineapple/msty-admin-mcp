@@ -220,7 +220,17 @@ def admin_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 
 @pytest.fixture()
-def studio_fixture(tmp_path: Path) -> Path:
+def studio_fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    # Writes need a detected Studio 2.x (v6.2.2 version gate). Pin 2.9.12 so
+    # these tests do not depend on the Studio install of the machine running them.
+    from src.paths import LAYOUT_SUPPORTED, MstyInstallation
+
+    monkeypatch.setattr(
+        "src.writes.detect_msty_installation",
+        lambda: MstyInstallation(
+            installed=True, version="2.9.12", layout_status=LAYOUT_SUPPORTED
+        ),
+    )
     db_path = tmp_path / "00000000"
     conn = sqlite3.connect(str(db_path))
     conn.executescript(STUDIO_29_SCHEMA)

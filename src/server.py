@@ -1,5 +1,5 @@
 """
-Msty Admin MCP Server v6.2.1
+Msty Admin MCP Server v6.2.2
 ============================
 
 Administer Msty Studio Desktop 2.9+ with real path/DB detection, entity inventory,
@@ -31,6 +31,7 @@ from src.tooling import F, ann
 from src.version import __version__ as SERVER_VERSION
 from src.paths import (
     MstyInstallation,
+    UnsupportedStudioLayout,
     detect_msty_installation as _detect_install,
     get_msty_paths,
     is_process_running,
@@ -102,6 +103,11 @@ def _json(payload: Any) -> str:
     return json.dumps(payload, indent=2, default=str)
 
 
+def _storage_json(payload: Any) -> str:
+    """JSON for Studio storage reads, with a warning when the version is unknown."""
+    return _json(db.with_read_warning(payload))
+
+
 def get_bloom_evaluator():
     try:
         from src.bloom import BloomEvaluator
@@ -135,7 +141,7 @@ def _server_status_payload() -> Dict[str, Any]:
             "phase_8_nexus": 3,
             "phase_9_frontier": 1,
         },
-        "studio_target": "2.9+",
+        "studio_target": "2.4 to 2.9.x (Studio 3.x detected and refused)",
     }
 
 
@@ -227,14 +233,14 @@ def read_msty_database(
 ) -> str:
     try:
         if query in ("stats", "stat"):
-            return _json({"query_type": "stats", **db.database_stats()})
+            return _storage_json({"query_type": "stats", **db.database_stats()})
         if query == "tables":
             tables = db.list_tables()
-            return _json({"query_type": "tables", "tables": tables, "count": len(tables)})
+            return _storage_json({"query_type": "tables", "tables": tables, "count": len(tables)})
         results, count = db.safe_query(query, limit=limit)
-        return _json({"query_type": "sql", "results": results, "count": count})
+        return _storage_json({"query_type": "sql", "results": results, "count": count})
     except Exception as exc:
-        return _json({"error": str(exc), "query_type": query})
+        return _storage_json({"error": str(exc), "query_type": query})
 
 
 @mcp.tool(
@@ -248,9 +254,9 @@ def read_msty_database(
 def list_configured_tools() -> str:
     result = inventory.list_entities("tools", limit=500)
     if "error" in result and "items" not in result:
-        return _json(result)
+        return _storage_json(result)
     tools = result.get("items", [])
-    return _json(
+    return _storage_json(
         {
             "tools": tools,
             "tool_count": len(tools),
@@ -276,7 +282,7 @@ def get_model_providers() -> str:
         "vibe": list_models_from_port(ports["vibe"]),
     }
     providers = inventory.list_entities("providers", limit=100)
-    return _json(
+    return _storage_json(
         {
             "services": service_status_map(),
             "local_models": local_models,
@@ -350,9 +356,9 @@ def export_tool_config(
         None,
     )
     if not match:
-        return _json({"error": f"Tool '{tool_name}' not found", "available": [t.get("name") for t in tools]})
+        return _storage_json({"error": f"Tool '{tool_name}' not found", "available": [t.get("name") for t in tools]})
     full = inventory.get_entity("tools", match["id"])
-    return _json(
+    return _storage_json(
         {
             "tool_name": tool_name,
             "exported_at": datetime.now().isoformat(),
@@ -378,8 +384,8 @@ def sync_claude_preferences() -> str:
             data = json.loads(claude_cfg.read_text())
             claude_servers = data.get("mcpServers") or {}
         except Exception as exc:
-            return _json({"status": "error", "error": str(exc)})
-    return _json(
+            return _storage_json({"status": "error", "error": str(exc)})
+    return _storage_json(
         {
             "status": "analysed",
             "timestamp": datetime.now().isoformat(),
@@ -644,7 +650,14 @@ def recommend_model(
     ] = "general",
 ) -> str:
     profile = _hardware_profile()
-    insights = analytics.get_insights_usage(timeframe="30d")
+    usage_note = None
+    try:
+        insights = analytics.get_insights_usage(timeframe="30d")
+    except UnsupportedStudioLayout as exc:
+        # Studio storage is refused (for example Studio 3.x). Recommend from
+        # hardware alone instead of failing the model tool.
+        insights = {}
+        usage_note = f"Studio usage not used. {exc}"
     result = hardware_catalog.recommend(
         profile,
         use_case=use_case,
@@ -657,6 +670,8 @@ def recommend_model(
         "apple_generation": profile.get("apple_generation"),
         "memory_kind": profile.get("memory_kind"),
     }
+    if usage_note:
+        result["usage_note"] = usage_note
     return _json(result)
 
 
@@ -778,7 +793,7 @@ def get_model_performance_metrics(
         str, F("Window such as 7d, 30d or all. Default 7d.")
     ] = "7d",
 ) -> str:
-    return _json(analytics.get_insights_usage(model_id=model_id, timeframe=timeframe))
+    return _storage_json(analytics.get_insights_usage(model_id=model_id, timeframe=timeframe))
 
 
 @mcp.tool(
@@ -793,7 +808,7 @@ def get_conversation_patterns(
         Optional[str], F("Optional model id to filter. Omit for all models.")
     ] = None,
 ) -> str:
-    return _json(analytics.analyse_conversation_patterns(model_id=model_id))
+    return _storage_json(analytics.analyse_conversation_patterns(model_id=model_id))
 
 
 @mcp.tool(
@@ -850,7 +865,7 @@ def compare_model_responses(
     ),
 )
 def optimise_knowledge_stacks() -> str:
-    return _json(analytics.optimise_knowledge_stacks())
+    return _storage_json(analytics.optimise_knowledge_stacks())
 
 
 @mcp.tool(
@@ -861,7 +876,7 @@ def optimise_knowledge_stacks() -> str:
     ),
 )
 def suggest_persona_improvements() -> str:
-    return _json(analytics.suggest_persona_improvements())
+    return _storage_json(analytics.suggest_persona_improvements())
 
 
 # ---------------------------------------------------------------------------
@@ -1062,7 +1077,7 @@ def identify_handoff_triggers() -> str:
                 "confidence": 0.4,
             }
         ]
-    return _json(
+    return _storage_json(
         {
             "triggers": triggers,
             "escalate_tool": "escalate_if_needed",
@@ -1310,7 +1325,7 @@ def bloom_validate_model(
     ),
 )
 def list_studio_catalogue() -> str:
-    return _json(inventory.catalogue_summary())
+    return _storage_json(inventory.catalogue_summary())
 
 
 @mcp.tool(
@@ -1324,7 +1339,7 @@ def list_studio_catalogue() -> str:
 def list_workspaces(
     limit: Annotated[int, F("Maximum rows. Integer from 1 to 500. Default 100.")] = 100,
 ) -> str:
-    return _json(inventory.list_entities("workspaces", limit=limit))
+    return _storage_json(inventory.list_entities("workspaces", limit=limit))
 
 
 @mcp.tool(
@@ -1338,7 +1353,7 @@ def list_workspaces(
 def list_personas(
     limit: Annotated[int, F("Maximum rows. Integer from 1 to 500. Default 100.")] = 100,
 ) -> str:
-    return _json(inventory.list_entities("personas", limit=limit))
+    return _storage_json(inventory.list_entities("personas", limit=limit))
 
 
 @mcp.tool(
@@ -1352,7 +1367,7 @@ def list_personas(
 def list_shadow_personas(
     limit: Annotated[int, F("Maximum rows. Integer from 1 to 500. Default 100.")] = 100,
 ) -> str:
-    return _json(inventory.list_entities("shadow_personas", limit=limit))
+    return _storage_json(inventory.list_entities("shadow_personas", limit=limit))
 
 
 @mcp.tool(
@@ -1366,7 +1381,7 @@ def list_shadow_personas(
 def list_crews(
     limit: Annotated[int, F("Maximum rows. Integer from 1 to 500. Default 100.")] = 100,
 ) -> str:
-    return _json(inventory.list_entities("crews", limit=limit))
+    return _storage_json(inventory.list_entities("crews", limit=limit))
 
 
 @mcp.tool(
@@ -1380,7 +1395,7 @@ def list_crews(
 def list_knowledge_stacks(
     limit: Annotated[int, F("Maximum rows. Integer from 1 to 500. Default 100.")] = 100,
 ) -> str:
-    return _json(inventory.list_entities("knowledge_stacks", limit=limit))
+    return _storage_json(inventory.list_entities("knowledge_stacks", limit=limit))
 
 
 @mcp.tool(
@@ -1394,7 +1409,7 @@ def list_knowledge_stacks(
 def list_turnstiles(
     limit: Annotated[int, F("Maximum rows. Integer from 1 to 500. Default 100.")] = 100,
 ) -> str:
-    return _json(inventory.list_entities("turnstiles", limit=limit))
+    return _storage_json(inventory.list_entities("turnstiles", limit=limit))
 
 
 @mcp.tool(
@@ -1407,7 +1422,7 @@ def list_turnstiles(
 def list_skills(
     limit: Annotated[int, F("Maximum rows. Integer from 1 to 500. Default 100.")] = 100,
 ) -> str:
-    return _json(
+    return _storage_json(
         {
             "skills": inventory.list_entities("skills", limit=limit),
             "folders": inventory.list_entities("skill_folders", limit=limit),
@@ -1426,7 +1441,7 @@ def list_skills(
 def list_live_contexts(
     limit: Annotated[int, F("Maximum rows. Integer from 1 to 500. Default 100.")] = 100,
 ) -> str:
-    return _json(inventory.list_entities("live_contexts", limit=limit))
+    return _storage_json(inventory.list_entities("live_contexts", limit=limit))
 
 
 @mcp.tool(
@@ -1440,7 +1455,7 @@ def list_live_contexts(
 def list_prompts(
     limit: Annotated[int, F("Maximum rows. Integer from 1 to 500. Default 100.")] = 100,
 ) -> str:
-    return _json(inventory.list_entities("prompts", limit=limit))
+    return _storage_json(inventory.list_entities("prompts", limit=limit))
 
 
 @mcp.tool(
@@ -1454,7 +1469,7 @@ def list_prompts(
 def list_context_studio(
     limit: Annotated[int, F("Maximum rows. Integer from 1 to 500. Default 100.")] = 100,
 ) -> str:
-    return _json(
+    return _storage_json(
         {
             "attachments": inventory.list_entities("attachments", limit=limit),
             "folders": inventory.list_entities("attachment_folders", limit=limit),
@@ -1473,7 +1488,7 @@ def list_context_studio(
 def list_agent_plans(
     limit: Annotated[int, F("Maximum rows. Integer from 1 to 500. Default 100.")] = 100,
 ) -> str:
-    return _json(inventory.list_entities("agent_plans", limit=limit))
+    return _storage_json(inventory.list_entities("agent_plans", limit=limit))
 
 
 @mcp.tool(
@@ -1491,7 +1506,7 @@ def get_studio_entity(
     ],
     entity_id: Annotated[str, F("Row id in that table.")],
 ) -> str:
-    return _json(inventory.get_entity(entity, entity_id))
+    return _storage_json(inventory.get_entity(entity, entity_id))
 
 
 @mcp.tool(
@@ -1510,9 +1525,9 @@ def get_schema_migrations(
             limit=limit,
             order_by="created_at DESC",
         )
-        return _json({"migrations": rows, "count": len(rows)})
+        return _storage_json({"migrations": rows, "count": len(rows)})
     except Exception as exc:
-        return _json({"error": str(exc), "migrations": []})
+        return _storage_json({"error": str(exc), "migrations": []})
 
 
 @mcp.tool(
@@ -1529,7 +1544,7 @@ def export_workflow_pack(
     ] = None,
     limit: Annotated[int, F("Maximum rows per kind. Integer from 1 to 500. Default 200.")] = 200,
 ) -> str:
-    return _json(inventory.export_workflow_pack(include=include, limit=limit))
+    return _storage_json(inventory.export_workflow_pack(include=include, limit=limit))
 
 
 # ---------------------------------------------------------------------------
@@ -1580,7 +1595,7 @@ def get_insights_usage(
     ] = None,
     timeframe: Annotated[str, F("Window such as 7d, 30d or all. Default 7d.")] = "7d",
 ) -> str:
-    return _json(analytics.get_insights_usage(model_id=model_id, timeframe=timeframe))
+    return _storage_json(analytics.get_insights_usage(model_id=model_id, timeframe=timeframe))
 
 
 # ---------------------------------------------------------------------------

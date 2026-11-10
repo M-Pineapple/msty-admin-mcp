@@ -16,7 +16,16 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence
 
-from src.paths import detect_msty_installation, is_process_running
+from src.paths import (
+    LAYOUT_SUPPORTED,
+    LAYOUT_UNSUPPORTED,
+    MstyInstallation,
+    UnsupportedStudioLayout,
+    detect_msty_installation,
+    is_process_running,
+    unknown_version_write_message,
+    unsupported_layout_message,
+)
 from src.safe_io import secure_create, secure_mkdir, secure_write
 from src.tooling import (
     DESCRIPTION_MAX,
@@ -137,11 +146,32 @@ def save_import_pack(pack: Dict[str, Any], dest_dir: Optional[Path] = None) -> P
     raise RuntimeError("could not allocate a unique import pack name") from last_error
 
 
+def studio_write_block(install: Optional[MstyInstallation] = None) -> Optional[str]:
+    """Return a refusal message unless the detected Studio version is a supported 2.x.
+
+    Writes fail closed on Studio 3.x and on an unknown or unreadable version.
+    """
+    install = install or detect_msty_installation()
+    if install.layout_status == LAYOUT_UNSUPPORTED:
+        return unsupported_layout_message(install.version)
+    if install.layout_status != LAYOUT_SUPPORTED:
+        return unknown_version_write_message()
+    return None
+
+
 def resolve_database_path(explicit: Optional[str] = None) -> Optional[Path]:
+    """Resolve the Studio SQLite path for writes.
+
+    Raises UnsupportedStudioLayout when the version gate refuses. An explicit
+    path does not bypass the gate.
+    """
+    install = detect_msty_installation()
+    blocked = studio_write_block(install)
+    if blocked:
+        raise UnsupportedStudioLayout(blocked)
     if explicit:
         path = Path(explicit)
         return path if path.exists() else None
-    install = detect_msty_installation()
     if install.database_path:
         candidate = Path(install.database_path)
         return candidate if candidate.exists() else None
@@ -608,7 +638,12 @@ def apply_pack(
         result["error"] = PACK_ONLY_NOTE
         return result
 
-    db_path = resolve_database_path(database_path)
+    try:
+        db_path = resolve_database_path(database_path)
+    except UnsupportedStudioLayout as exc:
+        result["status"] = "refused"
+        result["error"] = str(exc)
+        return result
     if not db_path:
         result["status"] = "refused"
         result["error"] = "Studio database not found"

@@ -10,10 +10,11 @@ from __future__ import annotations
 import json
 import platform
 import plistlib
+import re
 import socket
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 try:
     import psutil
@@ -28,6 +29,98 @@ DEFAULT_PORTS = {
     "vibe": 8317,
     "nexus": 11434,  # OpenAI-compatible gateway; overridden if detected
 }
+
+
+# Studio storage layouts this release can read and write. Studio 3.x moved to
+# file-based workspace storage, which this MCP does not understand yet.
+UNSUPPORTED_MAJOR = 3
+SUPPORTED_MIN = (2, 4)
+SUPPORTED_BELOW = (UNSUPPORTED_MAJOR,)
+VERSION_MAX_LEN = 64
+VERSION_PART_MAX_DIGITS = 6
+
+LAYOUT_SUPPORTED = "supported"
+LAYOUT_UNSUPPORTED = "unsupported"
+LAYOUT_UNKNOWN = "unknown"
+
+_VERSION_RE = re.compile(r"^\s*v?(\d+(?:\.\d+)*)")
+
+
+class UnsupportedStudioLayout(RuntimeError):
+    """Raised when Studio storage access is refused for the detected version."""
+
+
+def parse_version(value: Optional[str]) -> Optional[Tuple[int, ...]]:
+    """Parse a dotted version into a numeric tuple, or None when unparseable.
+
+    Numeric tuples order 10.0.0 above 2.9.12, which a string compare does not.
+    """
+    if not isinstance(value, str) or len(value) > VERSION_MAX_LEN:
+        return None
+    match = _VERSION_RE.match(value)
+    if not match:
+        return None
+    parts = match.group(1).split(".")
+    if any(len(part) > VERSION_PART_MAX_DIGITS for part in parts):
+        return None
+    try:
+        return tuple(int(part) for part in parts)
+    except ValueError:
+        return None
+
+
+def layout_status(version: Optional[str]) -> str:
+    """Classify a Studio version.
+
+    Supported only for 2.4 <= version < 3. Anything below 2.4 or at 3.0 and
+    above is unsupported. A missing or unparseable version is unknown.
+    """
+    parsed = parse_version(version)
+    if parsed is None:
+        return LAYOUT_UNKNOWN
+    if SUPPORTED_MIN <= parsed < SUPPORTED_BELOW:
+        return LAYOUT_SUPPORTED
+    return LAYOUT_UNSUPPORTED
+
+
+def _is_pre_2_4(version: Optional[str]) -> bool:
+    parsed = parse_version(version)
+    return parsed is not None and parsed < SUPPORTED_MIN
+
+
+def unsupported_layout_message(version: Optional[str]) -> str:
+    """User-facing refusal text for unsupported Studio versions."""
+    if _is_pre_2_4(version):
+        return (
+            f"Msty Studio version {version} is older than 2.4. This MCP supports the Studio "
+            "2.4 to 2.9.x storage layout only, so Studio reads and writes are disabled. "
+            "Service, model and Nexus tools still work."
+        )
+    return (
+        f"Msty Studio 3.x detected (version {version}). This MCP supports the Studio 2.9 "
+        "storage layout only. Studio 3.0 file-based workspace storage is not supported yet, "
+        "so Studio reads and writes are disabled to avoid reading stale data or damaging your "
+        "workspace. Service, model and Nexus tools still work. Track support in the "
+        "msty-admin-mcp README."
+    )
+
+
+def unknown_version_read_warning() -> str:
+    """Warning added to Studio read results when the version cannot be read."""
+    return (
+        "Msty Studio version could not be read. These results come from the Studio 2.x "
+        "database and may be a stale copy if this machine runs Studio 3.x."
+    )
+
+
+def unknown_version_write_message() -> str:
+    """User-facing refusal text for Studio writes when the version cannot be read."""
+    return (
+        "Msty Studio version could not be read, so Studio writes are refused. Writes run only "
+        "on a detected Studio 2.4 to 2.9.x install, because Studio 3.x changed workspace "
+        "storage. On Windows and Linux the version cannot be read yet. "
+        "Import the saved JSON pack in Persona Studio instead."
+    )
 
 
 @dataclass
@@ -48,6 +141,8 @@ class MstyInstallation:
     platform_info: Dict[str, Any] = field(default_factory=dict)
     service_ports: Dict[str, int] = field(default_factory=dict)
     schema_note: Optional[str] = None
+    layout: Optional[str] = None
+    layout_status: str = LAYOUT_UNKNOWN
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -61,6 +156,7 @@ def get_msty_paths() -> Dict[str, Path]:
     if system == "Darwin":
         return {
             "app": Path("/Applications/MstyStudio.app"),
+            "app_user": home / "Applications" / "MstyStudio.app",
             "app_alt": Path("/Applications/Msty.app"),
             "data": home / "Library" / "Application Support" / "MstyStudio",
             "data_legacy": home / "Library" / "Application Support" / "Msty",
@@ -247,10 +343,14 @@ def detect_msty_installation() -> MstyInstallation:
     )
 
     app = paths.get("app")
+    app_user = paths.get("app_user")
     app_alt = paths.get("app_alt")
     if app and app.exists():
         install.app_path = str(app)
         install.version = read_app_version(app)
+    elif app_user and app_user.exists():
+        install.app_path = str(app_user)
+        install.version = read_app_version(app_user)
     elif app_alt and app_alt.exists():
         install.app_path = str(app_alt)
         install.version = read_app_version(app_alt)
@@ -285,16 +385,27 @@ def detect_msty_installation() -> MstyInstallation:
     if sidecar and sidecar.exists():
         install.sidecar_path = str(sidecar)
 
-    db = resolve_database_path(paths)
-    if db:
-        install.database_path = str(db)
-        if "File System" in str(db):
-            install.schema_note = (
-                "Studio stores the workspace SQLite under Chromium File System "
-                "(not legacy msty.db)."
-            )
-        else:
-            install.schema_note = "Using legacy msty.db path."
+    install.layout_status = layout_status(install.version)
+    if install.layout_status == LAYOUT_UNSUPPORTED:
+        # Studio 3.x (or below 2.4): never fall back to the 2.9 blob, legacy
+        # msty.db or an rglob search. Those files may be a stale copy.
+        install.layout = "unsupported_pre_2_4" if _is_pre_2_4(install.version) else "unsupported_3x"
+        install.schema_note = unsupported_layout_message(install.version)
+    else:
+        db = resolve_database_path(paths)
+        if db:
+            install.database_path = str(db)
+            if "File System" in str(db):
+                install.layout = "studio_2x_file_system"
+                install.schema_note = (
+                    "Studio stores the workspace SQLite under Chromium File System "
+                    "(not legacy msty.db)."
+                )
+            else:
+                install.layout = "legacy_msty_db"
+                install.schema_note = "Using legacy msty.db path."
+            if install.layout_status == LAYOUT_UNKNOWN:
+                install.schema_note = f"{unknown_version_read_warning()} {install.schema_note}"
 
     install.is_running = is_process_running("MstyStudio")
     install.installed = bool(install.app_path or install.data_path or install.database_path)

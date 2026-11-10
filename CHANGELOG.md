@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+## v6.2.2 - 2026-11-10
+
+Safety release for Msty Studio 3.0.
+
+### Added
+
+- Studio version gate. The app version is parsed as numbers, so 10.0.0 sorts above 2.9.12. Studio 2.4 to 2.9.x is supported. Versions below 2.4 and from 3.0 on are unsupported. A missing, unreadable or over-long version is unknown.
+- `get_msty_installation` reports `layout` and `layout_status`.
+- Studio read results carry a warning when the version is unknown, because the data may be a stale copy.
+- macOS detection also looks for `~/Applications/MstyStudio.app`.
+
+### Changed
+
+- On Studio 3.x and below 2.4 every Studio storage read and write is refused with one clear message. Detection no longer falls back to the legacy `msty.db` files or a search of the `File System` folder, because after a 3.0 migration those may be stale copies.
+- Persona and prompt writes need a detected Studio 2.4 to 2.9.x. They are refused on other versions and when the version is unknown, and an explicit database path cannot bypass this. The JSON pack is still saved for import in Persona Studio.
+- On Windows and Linux the Studio version cannot be read yet, so Studio writes are refused there. Reads work as before and carry the stale-copy warning.
+- `recommend_model` still works on Studio 3.x. It recommends from hardware alone and notes that Studio usage was not used.
+- `get_status(scope=server)` reports `studio_target` as 2.4 to 2.9.x, with Studio 3.x detected and refused.
+- README warning about Studio 3.x, and the write conditions in the README name the Studio version check and Windows and Linux.
+
+Model, service, Nexus, calibration and Bloom tools are unchanged.
+
 ## v6.2.1 - 2026-11-02
 
 Glama tool-quality pass. 61 tools become 54.
