@@ -26,7 +26,7 @@ except ImportError:
     print("Error: MCP SDK not installed. Install with: pip install 'mcp>=1.0.0,<2'")
     sys.exit(1)
 
-from src import analytics, db, inventory, nexus
+from src import analytics, db, inventory, nexus, studio_storage
 from src.tooling import F, ann
 from src.version import __version__ as SERVER_VERSION
 from src.paths import (
@@ -35,6 +35,8 @@ from src.paths import (
     detect_msty_installation as _detect_install,
     get_msty_paths,
     is_process_running,
+    parse_version,
+    storage_layout,
 )
 from src.services import (
     check_service_available,
@@ -108,6 +110,32 @@ def _storage_json(payload: Any) -> str:
     return _json(db.with_read_warning(payload))
 
 
+WORKSPACE_HELP = (
+    "Optional Studio workspace name, slug or id from list_workspaces. "
+    "Omit for the active workspace."
+)
+
+
+def _workspace_error(exc: Exception) -> Dict[str, Any]:
+    """JSON error for an unknown or unreadable workspace, with the valid choices."""
+    try:
+        layout = storage_layout()
+        choices = [
+            {"name": w.name, "slug": w.slug, "storage": w.storage} for w in layout.workspaces
+        ]
+    except Exception:
+        choices = []
+    return {"error": str(exc), "workspaces": choices}
+
+
+def _inventory_json(fn: Any) -> str:
+    """Run an inventory read and turn workspace lookup failures into JSON errors."""
+    try:
+        return _storage_json(fn())
+    except (studio_storage.WorkspaceNotFound, studio_storage.WorkspaceUnreadable) as exc:
+        return _storage_json(_workspace_error(exc))
+
+
 def get_bloom_evaluator():
     try:
         from src.bloom import BloomEvaluator
@@ -141,7 +169,7 @@ def _server_status_payload() -> Dict[str, Any]:
             "phase_8_nexus": 3,
             "phase_9_frontier": 1,
         },
-        "studio_target": "2.4 to 2.9.x (Studio 3.x detected and refused)",
+        "studio_target": "2.4 to 2.9.x and 3.0.x (Studio 3.1 and later refused)",
     }
 
 
@@ -160,7 +188,8 @@ def _install_health_payload() -> Dict[str, Any]:
         recommendations.append(
             "Studio data/database not detected. Ensure MstyStudio.app has been launched once."
         )
-    if install.version and install.version not in ("unknown",) and install.version < "2.5.0":
+    parsed = parse_version(install.version)
+    if parsed and parsed < (2, 5):
         recommendations.append(
             f"Studio {install.version} is older than Knowledge Stacks Next Gen (2.5). Consider upgrading."
         )
@@ -230,14 +259,19 @@ def read_msty_database(
         int,
         F("Maximum SQL rows to return. Integer from 1 to 500. Default 100."),
     ] = 100,
+    workspace: Annotated[
+        Optional[str],
+        F(WORKSPACE_HELP),
+    ] = None,
 ) -> str:
     try:
+        path = inventory.workspace_database(workspace)
         if query in ("stats", "stat"):
-            return _storage_json({"query_type": "stats", **db.database_stats()})
+            return _storage_json({"query_type": "stats", **db.database_stats(path)})
         if query == "tables":
-            tables = db.list_tables()
+            tables = db.list_tables(database_path=path)
             return _storage_json({"query_type": "tables", "tables": tables, "count": len(tables)})
-        results, count = db.safe_query(query, limit=limit)
+        results, count = db.safe_query(query, limit=limit, database_path=path)
         return _storage_json({"query_type": "sql", "results": results, "count": count})
     except Exception as exc:
         return _storage_json({"error": str(exc), "query_type": query})
@@ -248,21 +282,31 @@ def read_msty_database(
     description=(
         "List MCP and Toolbox tools stored in Studio. "
         "Use this for Toolbox contents. Use list_studio_catalogue for entity counts across Studio. "
+        "Each tool has a connection summary (transport, auth type, OAuth mode, URL host, "
+        "header and env names) that never includes a secret value. "
         "Read-only. Returns JSON with tools and tool_count."
     ),
 )
-def list_configured_tools() -> str:
-    result = inventory.list_entities("tools", limit=500)
-    if "error" in result and "items" not in result:
-        return _storage_json(result)
-    tools = result.get("items", [])
-    return _storage_json(
-        {
-            "tools": tools,
-            "tool_count": len(tools),
-            "count": len(tools),
-        }
-    )
+def list_configured_tools(
+    workspace: Annotated[
+        Optional[str],
+        F(WORKSPACE_HELP),
+    ] = None,
+) -> str:
+    def build() -> Dict[str, Any]:
+        path = inventory.workspace_database(workspace)
+        result = inventory.list_entities("tools", limit=500, database_path=path)
+        if "error" in result and "items" not in result:
+            return result
+        raw = db.tool_configs_for_projection(path) if result.get("items") else {}
+        tools = []
+        for item in result.get("items", []):
+            tool = dict(item)
+            tool["connection"] = inventory.tool_connection(raw.get(str(item.get("id"))))
+            tools.append(tool)
+        return {"tools": tools, "tool_count": len(tools), "count": len(tools)}
+
+    return _inventory_json(build)
 
 
 @mcp.tool(
@@ -345,8 +389,16 @@ def export_tool_config(
         str,
         F("Toolbox tool name, toolId or id to export. Non-empty string."),
     ],
+    workspace: Annotated[
+        Optional[str],
+        F(WORKSPACE_HELP),
+    ] = None,
 ) -> str:
-    tools = inventory.list_entities("tools", limit=500).get("items", [])
+    try:
+        path = inventory.workspace_database(workspace)
+    except (studio_storage.WorkspaceNotFound, studio_storage.WorkspaceUnreadable) as exc:
+        return _storage_json(_workspace_error(exc))
+    tools = inventory.list_entities("tools", limit=500, database_path=path).get("items", [])
     match = next(
         (
             t
@@ -357,12 +409,14 @@ def export_tool_config(
     )
     if not match:
         return _storage_json({"error": f"Tool '{tool_name}' not found", "available": [t.get("name") for t in tools]})
-    full = inventory.get_entity("tools", match["id"])
+    full = inventory.get_entity("tools", match["id"], workspace=workspace)
+    raw = db.tool_configs_for_projection(path)
     return _storage_json(
         {
             "tool_name": tool_name,
             "exported_at": datetime.now().isoformat(),
             "config": full.get("item") or match,
+            "connection": inventory.tool_connection(raw.get(str(match.get("id")))),
         }
     )
 
@@ -1313,7 +1367,7 @@ def bloom_validate_model(
 
 
 # ---------------------------------------------------------------------------
-# Phase 7 — Studio 2.9 entity inventory
+# Phase 7 — Studio 2.9 and 3.0 entity inventory
 # ---------------------------------------------------------------------------
 
 
@@ -1324,8 +1378,13 @@ def bloom_validate_model(
         "Use a specific list_* tool for the rows themselves. Read-only. Returns JSON counts."
     ),
 )
-def list_studio_catalogue() -> str:
-    return _storage_json(inventory.catalogue_summary())
+def list_studio_catalogue(
+    workspace: Annotated[
+        Optional[str],
+        F(WORKSPACE_HELP),
+    ] = None,
+) -> str:
+    return _inventory_json(lambda: inventory.catalogue_summary(workspace=workspace))
 
 
 @mcp.tool(
@@ -1333,13 +1392,22 @@ def list_studio_catalogue() -> str:
     description=(
         "List Studio workspaces. "
         "Use get_studio_entity with entity=workspaces for one workspace, and list_studio_catalogue for counts. "
+        "On Studio 3.0 the storage key shows where each workspace lives, which one is active, "
+        "and any stale copy left behind by a storage move. "
         "Read-only. Returns JSON items up to limit."
     ),
 )
 def list_workspaces(
     limit: Annotated[int, F("Maximum rows. Integer from 1 to 500. Default 100.")] = 100,
 ) -> str:
-    return _storage_json(inventory.list_entities("workspaces", limit=limit))
+    result = inventory.list_entities("workspaces", limit=limit)
+    try:
+        layout = storage_layout()
+        if layout.workspaces or layout.stale_copies:
+            result["storage"] = layout.to_dict()
+    except Exception as exc:
+        result["storage_error"] = str(exc)
+    return _storage_json(result)
 
 
 @mcp.tool(
@@ -1352,8 +1420,12 @@ def list_workspaces(
 )
 def list_personas(
     limit: Annotated[int, F("Maximum rows. Integer from 1 to 500. Default 100.")] = 100,
+    workspace: Annotated[
+        Optional[str],
+        F(WORKSPACE_HELP),
+    ] = None,
 ) -> str:
-    return _storage_json(inventory.list_entities("personas", limit=limit))
+    return _inventory_json(lambda: inventory.list_entities("personas", limit=limit, workspace=workspace))
 
 
 @mcp.tool(
@@ -1366,22 +1438,37 @@ def list_personas(
 )
 def list_shadow_personas(
     limit: Annotated[int, F("Maximum rows. Integer from 1 to 500. Default 100.")] = 100,
+    workspace: Annotated[
+        Optional[str],
+        F(WORKSPACE_HELP),
+    ] = None,
 ) -> str:
-    return _storage_json(inventory.list_entities("shadow_personas", limit=limit))
+    return _inventory_json(lambda: inventory.list_entities("shadow_personas", limit=limit, workspace=workspace))
 
 
 @mcp.tool(
     **ann("List crews", read_only=True),
     description=(
-        "List Crew Mode crews from Studio. "
+        "List Crew Mode crews from Studio, with crew folders on Studio 3.0. "
         "Use get_studio_entity with entity=crews for one crew, and list_personas for members. "
         "Read-only. Returns JSON items up to limit."
     ),
 )
 def list_crews(
     limit: Annotated[int, F("Maximum rows. Integer from 1 to 500. Default 100.")] = 100,
+    workspace: Annotated[
+        Optional[str],
+        F(WORKSPACE_HELP),
+    ] = None,
 ) -> str:
-    return _storage_json(inventory.list_entities("crews", limit=limit))
+    def build() -> Dict[str, Any]:
+        result = inventory.list_entities("crews", limit=limit, workspace=workspace)
+        folders = inventory.list_entities("crew_folders", limit=limit, workspace=workspace)
+        if folders.get("items") or "note" not in folders:
+            result["folders"] = folders.get("items", [])
+        return result
+
+    return _inventory_json(build)
 
 
 @mcp.tool(
@@ -1394,8 +1481,12 @@ def list_crews(
 )
 def list_knowledge_stacks(
     limit: Annotated[int, F("Maximum rows. Integer from 1 to 500. Default 100.")] = 100,
+    workspace: Annotated[
+        Optional[str],
+        F(WORKSPACE_HELP),
+    ] = None,
 ) -> str:
-    return _storage_json(inventory.list_entities("knowledge_stacks", limit=limit))
+    return _inventory_json(lambda: inventory.list_entities("knowledge_stacks", limit=limit, workspace=workspace))
 
 
 @mcp.tool(
@@ -1408,8 +1499,12 @@ def list_knowledge_stacks(
 )
 def list_turnstiles(
     limit: Annotated[int, F("Maximum rows. Integer from 1 to 500. Default 100.")] = 100,
+    workspace: Annotated[
+        Optional[str],
+        F(WORKSPACE_HELP),
+    ] = None,
 ) -> str:
-    return _storage_json(inventory.list_entities("turnstiles", limit=limit))
+    return _inventory_json(lambda: inventory.list_entities("turnstiles", limit=limit, workspace=workspace))
 
 
 @mcp.tool(
@@ -1421,11 +1516,15 @@ def list_turnstiles(
 )
 def list_skills(
     limit: Annotated[int, F("Maximum rows. Integer from 1 to 500. Default 100.")] = 100,
+    workspace: Annotated[
+        Optional[str],
+        F(WORKSPACE_HELP),
+    ] = None,
 ) -> str:
-    return _storage_json(
-        {
-            "skills": inventory.list_entities("skills", limit=limit),
-            "folders": inventory.list_entities("skill_folders", limit=limit),
+    return _inventory_json(
+        lambda: {
+            "skills": inventory.list_entities("skills", limit=limit, workspace=workspace),
+            "folders": inventory.list_entities("skill_folders", limit=limit, workspace=workspace),
         }
     )
 
@@ -1440,8 +1539,12 @@ def list_skills(
 )
 def list_live_contexts(
     limit: Annotated[int, F("Maximum rows. Integer from 1 to 500. Default 100.")] = 100,
+    workspace: Annotated[
+        Optional[str],
+        F(WORKSPACE_HELP),
+    ] = None,
 ) -> str:
-    return _storage_json(inventory.list_entities("live_contexts", limit=limit))
+    return _inventory_json(lambda: inventory.list_entities("live_contexts", limit=limit, workspace=workspace))
 
 
 @mcp.tool(
@@ -1454,8 +1557,12 @@ def list_live_contexts(
 )
 def list_prompts(
     limit: Annotated[int, F("Maximum rows. Integer from 1 to 500. Default 100.")] = 100,
+    workspace: Annotated[
+        Optional[str],
+        F(WORKSPACE_HELP),
+    ] = None,
 ) -> str:
-    return _storage_json(inventory.list_entities("prompts", limit=limit))
+    return _inventory_json(lambda: inventory.list_entities("prompts", limit=limit, workspace=workspace))
 
 
 @mcp.tool(
@@ -1468,11 +1575,15 @@ def list_prompts(
 )
 def list_context_studio(
     limit: Annotated[int, F("Maximum rows. Integer from 1 to 500. Default 100.")] = 100,
+    workspace: Annotated[
+        Optional[str],
+        F(WORKSPACE_HELP),
+    ] = None,
 ) -> str:
-    return _storage_json(
-        {
-            "attachments": inventory.list_entities("attachments", limit=limit),
-            "folders": inventory.list_entities("attachment_folders", limit=limit),
+    return _inventory_json(
+        lambda: {
+            "attachments": inventory.list_entities("attachments", limit=limit, workspace=workspace),
+            "folders": inventory.list_entities("attachment_folders", limit=limit, workspace=workspace),
         }
     )
 
@@ -1487,8 +1598,12 @@ def list_context_studio(
 )
 def list_agent_plans(
     limit: Annotated[int, F("Maximum rows. Integer from 1 to 500. Default 100.")] = 100,
+    workspace: Annotated[
+        Optional[str],
+        F(WORKSPACE_HELP),
+    ] = None,
 ) -> str:
-    return _storage_json(inventory.list_entities("agent_plans", limit=limit))
+    return _inventory_json(lambda: inventory.list_entities("agent_plans", limit=limit, workspace=workspace))
 
 
 @mcp.tool(
@@ -1505,8 +1620,12 @@ def get_studio_entity(
         F("Catalogue key such as personas, crews or knowledge_stacks. Singular aliases such as persona are accepted."),
     ],
     entity_id: Annotated[str, F("Row id in that table.")],
+    workspace: Annotated[
+        Optional[str],
+        F(WORKSPACE_HELP),
+    ] = None,
 ) -> str:
-    return _storage_json(inventory.get_entity(entity, entity_id))
+    return _inventory_json(lambda: inventory.get_entity(entity, entity_id, workspace=workspace))
 
 
 @mcp.tool(
@@ -1518,12 +1637,17 @@ def get_studio_entity(
 )
 def get_schema_migrations(
     limit: Annotated[int, F("Maximum rows. Integer from 1 to 100. Default 20.")] = 20,
+    workspace: Annotated[
+        Optional[str],
+        F(WORKSPACE_HELP),
+    ] = None,
 ) -> str:
     try:
         rows = db.fetch_all(
             "__drizzle_migrations",
             limit=limit,
             order_by="created_at DESC",
+            database_path=inventory.workspace_database(workspace),
         )
         return _storage_json({"migrations": rows, "count": len(rows)})
     except Exception as exc:
@@ -1543,8 +1667,14 @@ def export_workflow_pack(
         F("Optional entity kinds to include, such as personas or tools. Omit for the default set."),
     ] = None,
     limit: Annotated[int, F("Maximum rows per kind. Integer from 1 to 500. Default 200.")] = 200,
+    workspace: Annotated[
+        Optional[str],
+        F(WORKSPACE_HELP),
+    ] = None,
 ) -> str:
-    return _storage_json(inventory.export_workflow_pack(include=include, limit=limit))
+    return _inventory_json(
+        lambda: inventory.export_workflow_pack(include=include, limit=limit, workspace=workspace)
+    )
 
 
 # ---------------------------------------------------------------------------

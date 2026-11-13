@@ -1,0 +1,249 @@
+{
+  "2.9.12": {
+    "personaFolders": [
+      {
+        "colorIcon": null,
+        "createdAt": "2026-11-13 16:54:36",
+        "extras": null,
+        "id": "__MSTY__PERSONA__ORPHANAGE__FOLDER__",
+        "isExpanded": 1,
+        "name": "Misc",
+        "sortOrder": -1
+      },
+      {
+        "colorIcon": null,
+        "createdAt": "2026-11-13 16:56:35",
+        "extras": "{\"personaStudioScope\":\"user\"}",
+        "id": "__MSTY__USER_PERSONA_ORPHANAGE_FOLDER__",
+        "isExpanded": 1,
+        "name": "Misc",
+        "sortOrder": -1
+      }
+    ],
+    "personaVersions": [
+      {
+        "changelog": null,
+        "colorIcon": "{\"name\":\"tabler:user-scan\"}",
+        "contextShieldInfo": null,
+        "createdAt": "2026-11-13 16:56:49",
+        "description": null,
+        "extras": "{\"attachmentsStudioDynamicSelection\":null}",
+        "fewShotPrompts": null,
+        "id": "01M7AXE98SWZ1MJDBFNSQN2H36",
+        "name": "Legacy Persona 29",
+        "partialKnowledgeStacksInfo": null,
+        "partialLiveContextsInfo": null,
+        "partialModelInfo": null,
+        "partialRTDInfo": null,
+        "partialSelectableAttachments": "[]",
+        "partialToolsetsInfo": null,
+        "personaId": "01M7AXE971YZ5B624Q790SV6FE",
+        "systemPrompt": "{\"text\":\"You are a 2.9 legacy fixture persona.\",\"mode\":\"append\"}",
+        "tags": "[]",
+        "versionNumber": 1
+      }
+    ],
+    "personas": [
+      {
+        "activeVersionId": "01M7AXE98SWZ1MJDBFNSQN2H36",
+        "colorIcon": "{\"name\":\"tabler:user-scan\"}",
+        "contextShieldInfo": null,
+        "createdAt": "2026-11-13 16:56:49",
+        "description": null,
+        "extras": "{\"attachmentsStudioDynamicSelection\":null}",
+        "fewShotPrompts": null,
+        "folderId": "__MSTY__PERSONA__ORPHANAGE__FOLDER__",
+        "id": "01M7AXE971YZ5B624Q790SV6FE",
+        "name": "Legacy Persona 29",
+        "partialKnowledgeStacksInfo": null,
+        "partialLiveContextsInfo": null,
+        "partialModelInfo": null,
+        "partialRTDInfo": null,
+        "partialSelectableAttachments": "[]",
+        "partialToolsetsInfo": null,
+        "systemPrompt": "{\"text\":\"You are a 2.9 legacy fixture persona.\",\"mode\":\"append\"}"
+      }
+    ],
+    "workspaces": [
+      {
+        "colorIcon": null,
+        "createdAt": "2026-11-13 16:54:40",
+        "extras": null,
+        "id": "__MSTY__DEFAULT__WORKSPACE__",
+        "isActive": 1,
+        "name": "Home",
+        "slug": "default"
+      }
+    ]
+  },
+  "3.0.0": {
+    "personaFolders": [
+      {
+        "colorIcon": null,
+        "createdAt": "2026-11-13 16:47:51",
+        "extras": null,
+        "folderParentId": null,
+        "id": "__MSTY__PERSONA__ORPHANAGE__FOLDER__",
+        "isExpanded": 1,
+        "name": "Misc",
+        "sortOrder": -1
+      }
+    ],
+    "personaVersions": [
+      {
+        "changelog": null,
+        "colorIcon": "{\"name\":\"tabler:user-scan\"}",
+        "contextShieldInfo": null,
+        "createdAt": "2026-11-13 16:49:59",
+        "description": "Fixture description",
+        "extras": "{\"attachmentsStudioDynamicSelection\":null}",
+        "fewShotPrompts": null,
+        "id": "01M7AX1S1CDGD2KDTQYC9HFZ5E",
+        "name": "Gold Persona Fixture",
+        "partialKnowledgeStacksInfo": null,
+        "partialLiveContextsInfo": null,
+        "partialModelInfo": null,
+        "partialRTDInfo": null,
+        "partialSelectableAttachments": "[]",
+        "partialToolsetsInfo": null,
+        "personaId": "01M7AX1S19ECEJNWPNC5K70C6K",
+        "systemPrompt": "{\"text\":\"You are a fixture persona used for schema discovery.\",\"mode\":\"append\"}",
+        "tags": "[]",
+        "versionNumber": 1
+      }
+    ],
+    "personas": [
+      {
+        "activeVersionId": "01M7AX1S1CDGD2KDTQYC9HFZ5E",
+        "colorIcon": "{\"name\":\"tabler:user-scan\"}",
+        "contextShieldInfo": null,
+        "createdAt": "2026-11-13 16:49:59",
+        "description": "Fixture description",
+        "extras": "{\"attachmentsStudioDynamicSelection\":null}",
+        "fewShotPrompts": null,
+        "folderId": "__MSTY__PERSONA__ORPHANAGE__FOLDER__",
+        "id": "01M7AX1S19ECEJNWPNC5K70C6K",
+        "name": "Gold Persona Fixture",
+        "partialKnowledgeStacksInfo": null,
+        "partialLiveContextsInfo": null,
+        "partialModelInfo": null,
+        "partialRTDInfo": null,
+        "partialSelectableAttachments": "[]",
+        "partialToolsetsInfo": null,
+        "systemPrompt": "{\"text\":\"You are a fixture persona used for schema discovery.\",\"mode\":\"append\"}"
+      }
+    ],
+    "promptsLibraryFolders": [
+      {
+        "colorIcon": null,
+        "createdAt": "2026-11-13 16:50:28",
+        "extras": null,
+        "folderParentId": null,
+        "id": "__MSTY__ORPHANAGE__FOLDER__",
+        "isExpanded": 1,
+        "name": "Misc",
+        "sortOrder": -1
+      }
+    ],
+    "promptsLibraryPrompts": [
+      {
+        "activeVersionId": null,
+        "createdAt": "2026-11-13 16:50:28",
+        "extras": null,
+        "folderId": "__MSTY__ORPHANAGE__FOLDER__",
+        "id": "01M7AX2NZ1CHRP2X8HMH7300GV",
+        "isBookmarked": 0,
+        "lastUsedAt": null,
+        "source": "custom",
+        "text": "Summarise {{ topic }} in 3 bullet points.",
+        "title": "Gold Prompt Fixture"
+      }
+    ],
+    "promptsVersions": [
+      {
+        "changelog": "Initial version",
+        "createdAt": "2026-11-13 16:50:28",
+        "extras": null,
+        "id": "01M7AX2NZ48C567GDPZ1TZZR3J",
+        "promptId": "01M7AX2NZ1CHRP2X8HMH7300GV",
+        "text": "Summarise {{ topic }} in 3 bullet points.",
+        "title": "Gold Prompt Fixture",
+        "variables": null,
+        "versionNumber": 1
+      }
+    ],
+    "tools": [
+      {
+        "colorIcon": "{\"name\":\"tabler:tool\"}",
+        "compatibility": null,
+        "config": "{\"transport\":\"http\",\"url\":\"https://mcp.fixture.invalid/mcp\",\"headers\":{\"X-Api-Key\":\"FIXTURE-HEADER-SECRET-0002\"},\"auth\":{\"type\":\"bearer\",\"token\":\"FIXTURE-BEARER-SECRET-0001\"}}",
+        "createdAt": "2026-11-13 16:51:10",
+        "extras": null,
+        "folderId": "__MSTY__TOOL__ORPHANAGE__FOLDER__",
+        "id": "01M7AX3YPTGPMAE51SGCANKDAY",
+        "name": "Gold HTTP Tool",
+        "notes": null,
+        "provider": "mcp",
+        "toolId": "gold-http-tool"
+      },
+      {
+        "colorIcon": "{\"name\":\"tabler:tool\"}",
+        "compatibility": null,
+        "config": "{\"command\":\"uvx\",\"args\":[\"fixture-mcp-server\"],\"env\":{\"FIXTURE_API_KEY\":\"FIXTURE-ENV-SECRET-0003\"}}",
+        "createdAt": "2026-11-13 16:51:29",
+        "extras": null,
+        "folderId": "__MSTY__TOOL__ORPHANAGE__FOLDER__",
+        "id": "01M7AX4HG71TN6NF8K08G8EXPJ",
+        "name": "Gold Stdio Tool",
+        "notes": null,
+        "provider": "mcp",
+        "toolId": "gold-stdio-tool"
+      },
+      {
+        "colorIcon": "{\"name\":\"tabler:tool\"}",
+        "compatibility": null,
+        "config": "{\"transport\":\"http\",\"url\":\"https://oauth.fixture.invalid/mcp\",\"headers\":{\"Authorization\":\"Basic FIXTURE-BASIC-SECRET-0005\"},\"auth\":{\"type\":\"oauth\",\"mode\":\"oauth\",\"clientId\":\"fixture-client-id\",\"clientSecret\":\"FIXTURE-CLIENT-SECRET-0004\",\"scope\":\"read write\"}}",
+        "createdAt": "2026-11-13 16:53:07",
+        "extras": null,
+        "folderId": "__MSTY__TOOL__ORPHANAGE__FOLDER__",
+        "id": "01M7AX7H3010EST6RVZB2TAHVV",
+        "name": "Gold OAuth Tool",
+        "notes": null,
+        "provider": "mcp",
+        "toolId": "gold-oauth-tool"
+      }
+    ],
+    "toolsToToolsets": [
+      {
+        "createdAt": "2026-11-13 16:51:10",
+        "extras": null,
+        "id": "01M7AX3YQM7071STHQZWNXWAPV",
+        "toolId": "01M7AX3YPTGPMAE51SGCANKDAY",
+        "toolsetId": "01M7AX3YQKSF1VG4H4KSJA7KY6"
+      }
+    ],
+    "toolsets": [
+      {
+        "createdAt": "2026-11-13 16:51:10",
+        "extras": null,
+        "folderId": "__MSTY__TOOLSET__ORPHANAGE__FOLDER__",
+        "id": "01M7AX3YQKSF1VG4H4KSJA7KY6",
+        "name": "Gold HTTP Tool",
+        "notes": "Auto-created for tool: Gold HTTP Tool",
+        "priority": 1794588670000.0
+      }
+    ],
+    "workspaces": [
+      {
+        "colorIcon": null,
+        "createdAt": "2026-11-13 16:47:51",
+        "extras": null,
+        "id": "__MSTY__DEFAULT__WORKSPACE__",
+        "isActive": 1,
+        "name": "Home",
+        "slug": "default"
+      }
+    ]
+  },
+  "_note": "Rows created through the Msty Studio UI on disposable Linux installs (2.9.12 and 3.0.0). Secret-looking values are fake fixture strings. Ids and timestamps are from the throwaway installs."
+}

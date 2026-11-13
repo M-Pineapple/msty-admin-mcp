@@ -1,10 +1,17 @@
 """
 Typed inventory helpers for Msty Studio entities (Drizzle schema).
+
+Column lists are a wish list: each read selects only the listed columns the
+table really has (PRAGMA table_info), so a renamed or dropped column in a
+newer Studio schema is reported, not fatal. ``optional_columns`` exist only
+in some releases and are not reported when absent.
 """
 
 from __future__ import annotations
 
+import json
 from typing import Any, Dict, List, Optional
+from urllib.parse import urlsplit
 
 from src import db
 
@@ -47,10 +54,18 @@ ENTITY_CATALOG: Dict[str, Dict[str, Any]] = {
             "responseMode",
             "executionMode",
             "contextMode",
+            "folderId",
             "createdAt",
             "updatedAt",
         ],
+        # Crew folders arrived in Studio 3.0 (verified on 3.0.0).
+        "optional_columns": ["folderId"],
         "order_by": "updatedAt DESC",
+    },
+    "crew_folders": {
+        "table": "crewFolders",
+        "columns": None,
+        "order_by": "sortOrder ASC",
     },
     "knowledge_stacks": {
         "table": "knowledgeStacks",
@@ -210,7 +225,33 @@ def resolve_entity_key(entity: str) -> Optional[str]:
     return ENTITY_ALIASES.get(key)
 
 
-def list_entities(entity: str, limit: int = 100) -> Dict[str, Any]:
+def workspace_database(workspace: Optional[str]) -> Optional[str]:
+    """Database path for a named workspace, or None for the active one."""
+    if workspace is None or not str(workspace).strip():
+        return None
+    path = db.get_database_path(workspace=workspace)
+    return str(path) if path else None
+
+
+def _present_columns(
+    meta: Dict[str, Any], table: str, database_path: Optional[str]
+) -> tuple:
+    wanted = meta.get("columns")
+    if not wanted:
+        return None, []
+    present = set(db.table_columns(table, database_path=database_path))
+    optional = set(meta.get("optional_columns") or [])
+    selected = [c for c in wanted if c in present]
+    missing = [c for c in wanted if c not in present and c not in optional]
+    return selected, missing
+
+
+def list_entities(
+    entity: str,
+    limit: int = 100,
+    workspace: Optional[str] = None,
+    database_path: Optional[str] = None,
+) -> Dict[str, Any]:
     resolved = resolve_entity_key(entity)
     meta = ENTITY_CATALOG.get(resolved) if resolved else None
     if not meta:
@@ -221,7 +262,8 @@ def list_entities(entity: str, limit: int = 100) -> Dict[str, Any]:
         }
     entity = resolved  # type: ignore[assignment]
     table = meta["table"]
-    if not db.table_exists(table):
+    database_path = database_path or workspace_database(workspace)
+    if not db.table_exists(table, database_path=database_path):
         return {
             "entity": entity,
             "table": table,
@@ -229,21 +271,36 @@ def list_entities(entity: str, limit: int = 100) -> Dict[str, Any]:
             "count": 0,
             "note": f"Table '{table}' not present in this Studio schema version",
         }
+    columns, missing = _present_columns(meta, table, database_path)
+    if columns is not None and not columns:
+        columns, missing = None, list(meta.get("columns") or [])
+    order_by = meta.get("order_by")
+    if order_by and order_by.split()[0] not in db.table_columns(table, database_path=database_path):
+        order_by = None
     items = db.fetch_all(
         table,
-        columns=meta.get("columns"),
+        columns=columns,
         limit=limit,
-        order_by=meta.get("order_by"),
+        order_by=order_by,
+        database_path=database_path,
     )
-    return {
+    result: Dict[str, Any] = {
         "entity": entity,
         "table": table,
         "count": len(items),
         "items": items,
     }
+    if workspace:
+        result["workspace"] = workspace
+    if missing:
+        result["missing_columns"] = missing
+        result["note"] = (
+            f"Columns not in this Studio schema and skipped: {', '.join(missing)}"
+        )
+    return result
 
 
-def get_entity(entity: str, entity_id: str) -> Dict[str, Any]:
+def get_entity(entity: str, entity_id: str, workspace: Optional[str] = None) -> Dict[str, Any]:
     resolved = resolve_entity_key(entity)
     meta = ENTITY_CATALOG.get(resolved) if resolved else None
     if not meta:
@@ -254,7 +311,7 @@ def get_entity(entity: str, entity_id: str) -> Dict[str, Any]:
         }
     entity = resolved  # type: ignore[assignment]
     table = meta["table"]
-    row = db.fetch_by_id(table, entity_id)
+    row = db.fetch_by_id(table, entity_id, database_path=workspace_database(workspace))
     if not row:
         return {"entity": entity, "id": entity_id, "found": False}
     return {"entity": entity, "id": entity_id, "found": True, "item": row}
@@ -263,6 +320,7 @@ def get_entity(entity: str, entity_id: str) -> Dict[str, Any]:
 def export_workflow_pack(
     include: Optional[List[str]] = None,
     limit: int = 200,
+    workspace: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Export a read-only snapshot of selected Studio entities for backup/migration."""
     keys = include or [
@@ -282,21 +340,88 @@ def export_workflow_pack(
         "version": 1,
         "entities": {},
     }
+    database_path = workspace_database(workspace)
+    if workspace:
+        pack["workspace"] = workspace
     for key in keys:
         resolved = resolve_entity_key(key) or key
-        pack["entities"][resolved] = list_entities(resolved, limit=limit)
+        pack["entities"][resolved] = list_entities(
+            resolved, limit=limit, database_path=database_path
+        )
     return pack
 
 
-def catalogue_summary() -> Dict[str, Any]:
+def catalogue_summary(workspace: Optional[str] = None) -> Dict[str, Any]:
     summary = {}
+    database_path = workspace_database(workspace)
+    tables = set(db.list_tables(database_path=database_path))
     for key, meta in ENTITY_CATALOG.items():
         table = meta["table"]
-        if db.table_exists(table):
+        if table in tables:
             try:
-                summary[key] = {"table": table, "count": db.count_rows(table)}
+                summary[key] = {
+                    "table": table,
+                    "count": db.count_rows(table, database_path=database_path),
+                }
             except Exception as exc:
                 summary[key] = {"table": table, "error": str(exc)}
         else:
             summary[key] = {"table": table, "count": 0, "missing": True}
     return summary
+
+
+def tool_connection(config: Any) -> Dict[str, Any]:
+    """Safe projection of one Toolbox tool config. Never returns a value.
+
+    Shapes verified on Studio 3.0.0: HTTP tools store
+    {transport: "http", url, headers: {name: value}, auth: {type: "bearer", token}}
+    or auth {type: "oauth", mode: "oauth" | "oauth-dynamic", clientId, clientSecret,
+    scope}. No auth means no auth key. STDIO tools store {command, args, env}.
+    OAuth tokens live in Studio's encrypted secrets store, not the workspace
+    database, so authorisation status cannot be read here.
+    """
+    if isinstance(config, str):
+        try:
+            config = json.loads(config)
+        except ValueError:
+            config = None
+    if not isinstance(config, dict):
+        return {"transport": "unknown"}
+    transport = str(config.get("transport") or config.get("type") or "").lower()
+    if not transport:
+        transport = "stdio" if "command" in config else "unknown"
+    out: Dict[str, Any] = {"transport": transport}
+    url = config.get("url")
+    if isinstance(url, str) and url:
+        try:
+            out["url_host"] = urlsplit(url).hostname
+        except ValueError:
+            out["url_host"] = None
+    headers = config.get("headers")
+    if isinstance(headers, dict):
+        out["header_names"] = sorted(str(k) for k in headers)
+    elif isinstance(headers, list):
+        names = []
+        for item in headers:
+            if isinstance(item, dict):
+                parts = [item.get(k) for k in ("name", "key", "header") if isinstance(item.get(k), str)]
+                if parts:
+                    names.append(parts[0])
+        out["header_names"] = sorted(names)
+    if transport != "stdio":
+        auth = config.get("auth")
+        if isinstance(auth, dict):
+            auth_type = str(auth.get("type") or "unknown").lower()
+            out["auth_type"] = auth_type
+            if auth_type == "oauth":
+                out["oauth_mode"] = str(auth.get("mode") or "oauth")
+                out["oauth_client_id_set"] = bool(auth.get("clientId"))
+                out["oauth_status"] = "not_stored_in_workspace"
+        else:
+            out["auth_type"] = "none"
+    env = config.get("env")
+    if isinstance(env, dict):
+        out["env_names"] = sorted(str(k) for k in env)
+    if "command" in config:
+        out["has_command"] = True
+    return out

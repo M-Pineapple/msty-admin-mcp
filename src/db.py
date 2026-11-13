@@ -18,8 +18,10 @@ from src.paths import (
     LAYOUT_UNSUPPORTED,
     UnsupportedStudioLayout,
     detect_msty_installation,
+    unknown_version_file_storage_warning,
     unknown_version_read_warning,
     unsupported_layout_message,
+    workspace_database_path,
 )
 
 # Only allow SELECT / WITH / PRAGMA for arbitrary query tool
@@ -99,7 +101,7 @@ _HEX_BLOB_RE = re.compile(r"\A(?:[0-9a-fA-F]{2}){8,}\Z")
 _SENSITIVE_FOLDED_SUFFIXES = (
     "apikey", "secret", "secrets", "token", "password", "passwords", "passwd",
     "credential", "credentials", "authorization", "privatekey", "secretkey",
-    "accesskey", "accesskeyid", "key", "keys", "header", "headers", "auth",
+    "accesskey", "accesskeyid", "key", "keys", "header", "headers", "auth", "bearer",
 )
 _SENSITIVE_FOLDED_PREFIXES = (
     "keyvalue", "keymaterial", "keydata", "secret", "password", "credential", "apikey",
@@ -165,6 +167,48 @@ def _redact_secret_patterns(value: str, *, decode_hex: bool = True) -> str:
     return redacted
 
 
+# {name|key|header: label, value: secret} pairs (header and env lists). The
+# label is shown, and the value is hidden when the label names a credential.
+_PAIR_LABEL_KEYS = ("name", "key", "header", "headername")
+_PAIR_VALUE_KEYS = ("value", "val")
+_PAIR_SENSITIVE_HINTS = (
+    "auth", "token", "secret", "password", "passwd", "apikey", "cookie", "session",
+    "signature", "credential", "bearer", "privatekey", "accesskey",
+)
+
+
+def _pair_parts(value: Dict[str, Any]) -> Optional[Tuple[str, str, str]]:
+    """Return (label_key, label, value_key) for a name/value pair dict, else None."""
+    lowered = {str(k).lower(): k for k in value}
+    value_key = next((lowered[k] for k in _PAIR_VALUE_KEYS if k in lowered), None)
+    label_key = next((lowered[k] for k in _PAIR_LABEL_KEYS if k in lowered), None)
+    if value_key is None or label_key is None:
+        return None
+    label = value.get(label_key)
+    if not isinstance(label, str):
+        return None
+    return label_key, label, value_key
+
+
+def _pair_label_is_sensitive(label: str) -> bool:
+    folded = re.sub(r"[^a-z0-9]", "", label.lower())
+    return _is_sensitive_key(label) or any(hint in folded for hint in _PAIR_SENSITIVE_HINTS)
+
+
+def _redact_pair(value: Dict[str, Any], parts: Tuple[str, str, str]) -> Dict[str, Any]:
+    label_key, label, value_key = parts
+    hide = _pair_label_is_sensitive(label)
+    out: Dict[str, Any] = {}
+    for k, v in value.items():
+        if k == label_key:
+            out[k] = _redact_secret_patterns(label)
+        elif k == value_key:
+            out[k] = "[REDACTED]" if hide and v not in (None, "") else redact_value(label, v)
+        else:
+            out[k] = redact_value(k, v)
+    return out
+
+
 def redact_value(key: str, value: Any) -> Any:
     if isinstance(value, str):
         parsed = _try_json(value)
@@ -179,6 +223,9 @@ def redact_value(key: str, value: Any) -> Any:
     if _is_sensitive_key(key) and value not in (None, "", [], {}):
         return "[REDACTED]"
     if isinstance(value, dict):
+        parts = _pair_parts(value)
+        if parts is not None:
+            return _redact_pair(value, parts)
         return {k: redact_value(k, v) for k, v in value.items()}
     if isinstance(value, list):
         return _redact_arg_list(key, value)
@@ -405,24 +452,35 @@ def with_read_warning(payload: Any) -> Any:
     if not isinstance(payload, dict):
         return payload
     try:
-        status = detect_msty_installation().layout_status
+        install = detect_msty_installation()
+        status, layout = install.layout_status, install.layout
     except Exception:
-        status = LAYOUT_UNKNOWN
+        status, layout = LAYOUT_UNKNOWN, None
     if status == LAYOUT_UNKNOWN:
         payload = dict(payload)
-        payload["warning"] = unknown_version_read_warning()
+        payload["warning"] = (
+            unknown_version_file_storage_warning()
+            if layout == "studio_3x_file_storage"
+            else unknown_version_read_warning()
+        )
     return payload
 
 
-def get_database_path(explicit: Optional[str] = None) -> Optional[Path]:
+def get_database_path(
+    explicit: Optional[str] = None, workspace: Optional[str] = None
+) -> Optional[Path]:
     """Resolve the Studio SQLite path for reads.
 
-    Raises UnsupportedStudioLayout on Studio 3.x, even for an explicit path,
-    so no Studio-storage read runs against a layout this release cannot read.
+    Raises UnsupportedStudioLayout on Studio 3.1+ (or below 2.4), even for an
+    explicit path, so no Studio-storage read runs against a layout this release
+    cannot read. ``workspace`` picks one workspace by slug, id or name from the
+    Studio registry. It never resolves to a stale browser-storage copy.
     """
     install = detect_msty_installation()
     if install.layout_status == LAYOUT_UNSUPPORTED:
         raise UnsupportedStudioLayout(unsupported_layout_message(install.version))
+    if workspace is not None and str(workspace).strip():
+        return workspace_database_path(str(workspace))
     if explicit:
         path = Path(explicit)
         return path if path.exists() else None
@@ -452,6 +510,13 @@ def list_tables(database_path: Optional[str] = None) -> List[str]:
             "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
         ).fetchall()
         return [r["name"] for r in rows]
+
+
+def table_columns(table: str, database_path: Optional[str] = None) -> List[str]:
+    if not re.fullmatch(r"[A-Za-z0-9_]+", table):
+        raise ValueError(f"Invalid table name: {table}")
+    with connect(database_path=database_path) as conn:
+        return [r["name"] for r in conn.execute(f'PRAGMA table_info("{table}")').fetchall()]
 
 
 def table_exists(table: str, database_path: Optional[str] = None) -> bool:
@@ -504,6 +569,20 @@ def fetch_all(
     with connect(database_path=database_path) as conn:
         rows = conn.execute(" ".join(sql), params).fetchall()
         return [redact_row(dict(r)) for r in rows]
+
+
+def tool_configs_for_projection(database_path: Optional[str] = None) -> Dict[str, Any]:
+    """Unredacted Toolbox ``config`` JSON keyed by tool id.
+
+    Only for inventory.tool_connection, which keeps names and types and drops
+    every value. Never return this mapping from a tool.
+    """
+    with connect(database_path=database_path) as conn:
+        cols = {r["name"] for r in conn.execute('PRAGMA table_info("tools")').fetchall()}
+        if not {"id", "config"} <= cols:
+            return {}
+        rows = conn.execute('SELECT "id", "config" FROM "tools" LIMIT 1000').fetchall()
+        return {str(r["id"]): r["config"] for r in rows}
 
 
 def fetch_by_id(

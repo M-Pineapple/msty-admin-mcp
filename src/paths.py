@@ -1,8 +1,10 @@
 """
-Msty Studio path resolution and installation detection (Studio 2.4+ / 2.9+).
+Msty Studio path resolution and installation detection (Studio 2.4 to 3.0.x).
 
 Resolves the real on-disk layout used by MstyStudio.app on macOS, including
-the Chromium File System SQLite workspace database.
+the Chromium File System SQLite workspace database (Studio 2.x, and Studio 3.0
+until file-based storage is enabled) and Studio 3.0 file-based workspace
+storage (see src/studio_storage.py).
 """
 
 from __future__ import annotations
@@ -15,6 +17,8 @@ import socket
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+
+from src import studio_storage
 
 try:
     import psutil
@@ -31,11 +35,12 @@ DEFAULT_PORTS = {
 }
 
 
-# Studio storage layouts this release can read and write. Studio 3.x moved to
-# file-based workspace storage, which this MCP does not understand yet.
-UNSUPPORTED_MAJOR = 3
+# Studio storage layouts this release can read. Studio 3.0.0 was verified on a
+# disposable install (docs/msty-3-layout.md). Later 3.x releases stay refused
+# until their storage is checked the same way.
+STUDIO_3 = (3,)
 SUPPORTED_MIN = (2, 4)
-SUPPORTED_BELOW = (UNSUPPORTED_MAJOR,)
+SUPPORTED_BELOW = (3, 1)
 VERSION_MAX_LEN = 64
 VERSION_PART_MAX_DIGITS = 6
 
@@ -72,7 +77,7 @@ def parse_version(value: Optional[str]) -> Optional[Tuple[int, ...]]:
 def layout_status(version: Optional[str]) -> str:
     """Classify a Studio version.
 
-    Supported only for 2.4 <= version < 3. Anything below 2.4 or at 3.0 and
+    Supported only for 2.4 <= version < 3.1. Anything below 2.4 or at 3.1 and
     above is unsupported. A missing or unparseable version is unknown.
     """
     parsed = parse_version(version)
@@ -81,6 +86,12 @@ def layout_status(version: Optional[str]) -> str:
     if SUPPORTED_MIN <= parsed < SUPPORTED_BELOW:
         return LAYOUT_SUPPORTED
     return LAYOUT_UNSUPPORTED
+
+
+def is_studio_3(version: Optional[str]) -> bool:
+    """True for a parsed Studio 3.x or later version."""
+    parsed = parse_version(version)
+    return parsed is not None and parsed >= STUDIO_3
 
 
 def _is_pre_2_4(version: Optional[str]) -> bool:
@@ -97,11 +108,20 @@ def unsupported_layout_message(version: Optional[str]) -> str:
             "Service, model and Nexus tools still work."
         )
     return (
-        f"Msty Studio 3.x detected (version {version}). This MCP supports the Studio 2.9 "
-        "storage layout only. Studio 3.0 file-based workspace storage is not supported yet, "
-        "so Studio reads and writes are disabled to avoid reading stale data or damaging your "
-        "workspace. Service, model and Nexus tools still work. Track support in the "
-        "msty-admin-mcp README."
+        f"Msty Studio {version} detected. This MCP supports the Studio 2.4 to 2.9.x and "
+        "3.0.x storage layouts only. Newer releases are refused until their storage is "
+        "verified, so Studio reads and writes are disabled to avoid reading stale data or "
+        "damaging your workspace. Service, model and Nexus tools still work. Track support "
+        "in the msty-admin-mcp README."
+    )
+
+
+def unknown_version_file_storage_warning() -> str:
+    """Warning for reads of Studio 3.0 file-based storage when the version is unknown."""
+    return (
+        "Msty Studio version could not be read. File-based workspace storage was found, so "
+        "these results come from the active workspace in that storage (a Studio 3.0 layout). "
+        "Check schema_fingerprint in get_msty_installation if a column is missing."
     )
 
 
@@ -117,8 +137,8 @@ def unknown_version_write_message() -> str:
     """User-facing refusal text for Studio writes when the version cannot be read."""
     return (
         "Msty Studio version could not be read, so Studio writes are refused. Writes run only "
-        "on a detected Studio 2.4 to 2.9.x install, because Studio 3.x changed workspace "
-        "storage. On Windows and Linux the version cannot be read yet. "
+        "on a detected Studio 2.4 to 2.9.x or 3.0.x install, because Studio 3.0 changed "
+        "workspace storage. On Windows and Linux the version cannot be read yet. "
         "Import the saved JSON pack in Persona Studio instead."
     )
 
@@ -143,12 +163,16 @@ class MstyInstallation:
     schema_note: Optional[str] = None
     layout: Optional[str] = None
     layout_status: str = LAYOUT_UNKNOWN
+    active_workspace: Optional[str] = None
+    workspaces: List[Dict[str, Any]] = field(default_factory=list)
+    stale_copies: List[Dict[str, str]] = field(default_factory=list)
+    schema_fingerprint: Optional[Dict[str, Any]] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
 
 
-def get_msty_paths() -> Dict[str, Path]:
+def get_msty_paths() -> Dict[str, Optional[Path]]:
     """Return candidate paths for the current platform."""
     home = Path.home()
     system = platform.system()
@@ -185,9 +209,10 @@ def get_msty_paths() -> Dict[str, Path]:
 
     if system == "Windows":
         appdata = Path.home() / "AppData" / "Roaming"
+        # No app bundle path: Path("") would resolve to the working directory.
         return {
-            "app": Path(""),
-            "app_alt": Path(""),
+            "app": None,
+            "app_alt": None,
             "data": appdata / "MstyStudio",
             "data_legacy": appdata / "Msty",
             "sidecar": appdata / "MstySidecar",
@@ -197,15 +222,15 @@ def get_msty_paths() -> Dict[str, Path]:
             "config": appdata / "MstyStudio" / "Gifnoc.nosj",
             "mlx_models": appdata / "MstyStudio" / "models-mlx",
             "local_models": appdata / "MstyStudio" / "models",
-            "nexus_app": Path(""),
+            "nexus_app": None,
             "nexus_data": appdata / "MstyNexus",
         }
 
     # Linux
     config_home = home / ".config"
     return {
-        "app": Path(""),
-        "app_alt": Path(""),
+        "app": None,
+        "app_alt": None,
         "data": config_home / "MstyStudio",
         "data_legacy": config_home / "Msty",
         "sidecar": config_home / "MstySidecar",
@@ -215,7 +240,7 @@ def get_msty_paths() -> Dict[str, Path]:
         "config": config_home / "MstyStudio" / "Gifnoc.nosj",
         "mlx_models": config_home / "MstyStudio" / "models-mlx",
         "local_models": config_home / "MstyStudio" / "models",
-        "nexus_app": Path(""),
+        "nexus_app": None,
         "nexus_data": config_home / "MstyNexus",
     }
 
@@ -330,6 +355,93 @@ def resolve_database_path(paths: Dict[str, Path]) -> Optional[Path]:
     return None
 
 
+def _browser_home_database(paths: Dict[str, Optional[Path]]) -> Optional[Path]:
+    candidate = paths.get("database")
+    return candidate if studio_storage.is_sqlite_file(candidate) else None
+
+
+def _apply_studio_3_storage(install: MstyInstallation, paths: Dict[str, Optional[Path]]) -> bool:
+    """Resolve the active workspace for Studio 3.0, or for an unknown version
+    when file-based storage exists (only Studio 3.0 creates it).
+
+    Returns False when the Studio 2.x resolver should run instead.
+    """
+    studio_3 = is_studio_3(install.version)
+    if not studio_3 and install.layout_status != LAYOUT_UNKNOWN:
+        return False
+    data = paths.get("data")
+    if data and data.exists():
+        layout = studio_storage.discover(data, _browser_home_database(paths))
+    elif studio_3:
+        layout = studio_storage.StorageLayout()
+    else:
+        return False
+    if not studio_3 and not layout.uses_file_storage:
+        return False
+    if not layout.workspaces:
+        # Studio 3.0 with no workspace database: never fall back to legacy msty.db.
+        install.layout = "studio_3x_no_workspace"
+        install.schema_note = (
+            "Studio 3.0 detected but no workspace database was found. Launch Studio once."
+        )
+        return True
+    install.workspaces = [w.to_dict() for w in layout.workspaces]
+    install.stale_copies = list(layout.stale_copies)
+    install.active_workspace = layout.active_slug
+    active = layout.active()
+    notes: List[str] = []
+    if active and active.database_path:
+        install.database_path = active.database_path
+        if active.storage == studio_storage.STORAGE_NATIVE:
+            install.layout = "studio_3x_file_storage"
+            notes.append(
+                f"Studio 3.0 file-based workspace storage. Active workspace "
+                f"{active.name or active.slug!r} is read from its own msty.cloud.db."
+            )
+        else:
+            install.layout = "studio_3x_browser_storage"
+            notes.append(
+                "Studio 3.0 still keeps this workspace in Chromium File System storage "
+                "(file-based storage not enabled yet)."
+            )
+        try:
+            install.schema_fingerprint = studio_storage.fingerprint_path(Path(active.database_path))
+        except Exception:
+            install.schema_fingerprint = None
+    else:
+        install.layout = "studio_3x_workspace_unreadable"
+        label = (active.name or active.slug) if active else "active workspace"
+        reason = active.note if active and active.note else "Its database was not found."
+        notes.append(f"Active workspace {label!r} cannot be read. {reason}")
+    if layout.stale_copies:
+        notes.append(
+            f"{len(layout.stale_copies)} stale browser-storage copy found and ignored "
+            "(see stale_copies)."
+        )
+    if install.layout_status == LAYOUT_UNKNOWN:
+        notes.insert(0, unknown_version_file_storage_warning())
+    install.schema_note = " ".join(notes)
+    return True
+
+
+def storage_layout() -> studio_storage.StorageLayout:
+    """Discover every workspace and the database Studio currently uses for it."""
+    paths = get_msty_paths()
+    data = paths.get("data")
+    if not data or not data.exists():
+        return studio_storage.StorageLayout()
+    return studio_storage.discover(data, _browser_home_database(paths))
+
+
+def workspace_database_path(workspace: str) -> Path:
+    """Database path for one workspace by slug, id or name.
+
+    Raises WorkspaceNotFound or WorkspaceUnreadable. Never returns a stale copy.
+    """
+    chosen = studio_storage.resolve_workspace(storage_layout(), workspace)
+    return Path(chosen.database_path)  # type: ignore[arg-type]
+
+
 def detect_msty_installation() -> MstyInstallation:
     """Detect Msty Studio app, data directory, database, and service ports."""
     paths = get_msty_paths()
@@ -387,11 +499,11 @@ def detect_msty_installation() -> MstyInstallation:
 
     install.layout_status = layout_status(install.version)
     if install.layout_status == LAYOUT_UNSUPPORTED:
-        # Studio 3.x (or below 2.4): never fall back to the 2.9 blob, legacy
+        # Studio 3.1+ (or below 2.4): never fall back to the 2.9 blob, legacy
         # msty.db or an rglob search. Those files may be a stale copy.
         install.layout = "unsupported_pre_2_4" if _is_pre_2_4(install.version) else "unsupported_3x"
         install.schema_note = unsupported_layout_message(install.version)
-    else:
+    elif not _apply_studio_3_storage(install, paths):
         db = resolve_database_path(paths)
         if db:
             install.database_path = str(db)

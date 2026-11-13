@@ -1,4 +1,6 @@
-"""Studio 3.x version gate (v6.2.2). Fixtures only, no real Studio data."""
+"""Studio version gate. Studio 3.0.x is supported from v6.3.0 (see
+test_studio3_support.py), so the refusal tests below use 3.1 and later.
+Fixtures only, no real Studio data."""
 
 from __future__ import annotations
 
@@ -22,13 +24,13 @@ from src.paths import (
 )
 from tests.test_hybrid import STUDIO_29_SCHEMA
 
-REFUSAL = "Msty Studio 3.x detected"
+REFUSAL = "Newer releases are refused until their storage is verified"
 OLD_REFUSAL = "is older than 2.4"
 UNKNOWN_REFUSAL = "Msty Studio version could not be read, so Studio writes are refused"
 READ_WARNING = "may be a stale copy if this machine runs Studio 3.x"
 MISSING = object()
 
-# Tools that read or write Studio storage. Each must refuse on Studio 3.x.
+# Tools that read or write Studio storage. Each must refuse on Studio 3.1+.
 STUDIO_STORAGE_TOOLS = {
     "read_msty_database": {},
     "list_configured_tools": {},
@@ -144,7 +146,9 @@ class TestParseVersion:
             ("2.3.9", LAYOUT_UNSUPPORTED),
             ("1.5.0", LAYOUT_UNSUPPORTED),
             ("0.9", LAYOUT_UNSUPPORTED),
-            ("3.0.0", LAYOUT_UNSUPPORTED),
+            ("3.0.0", LAYOUT_SUPPORTED),
+            ("3.0.12", LAYOUT_SUPPORTED),
+            ("3.0.0-beta.15", LAYOUT_SUPPORTED),
             ("3.1.0", LAYOUT_UNSUPPORTED),
             ("10.0.0", LAYOUT_UNSUPPORTED),
             ("unknown", LAYOUT_UNKNOWN),
@@ -166,7 +170,7 @@ class TestDetection:
         assert install.layout == "studio_2x_file_system"
         assert install.database_path == str(primary)
 
-    @pytest.mark.parametrize("version", ["3.0.0", "3.1.0"])
+    @pytest.mark.parametrize("version", ["3.1.0", "4.0.0"])
     def test_3x_has_no_database_and_no_fallback(self, fake_studio, version):
         fake_studio(version)
         install = paths.detect_msty_installation()
@@ -176,7 +180,7 @@ class TestDetection:
         # Legacy msty.db files exist in the fixture and must not be used.
         assert install.database_path is None
         assert REFUSAL in install.schema_note
-        assert f"version {version}" in install.schema_note
+        assert f"Studio {version} detected" in install.schema_note
 
     @pytest.mark.parametrize("version", [MISSING, None, "garbage", "9" * 5000])
     def test_unknown_version_still_reads(self, fake_studio, version):
@@ -199,9 +203,9 @@ class TestDetection:
             db.get_database_path()
 
     def test_user_applications_bundle_is_detected(self, fake_studio):
-        fake_studio("3.0.0", location="app_user")
+        fake_studio("3.1.0", location="app_user")
         install = paths.detect_msty_installation()
-        assert install.version == "3.0.0"
+        assert install.version == "3.1.0"
         assert install.layout_status == LAYOUT_UNSUPPORTED
         assert install.database_path is None
 
@@ -213,13 +217,15 @@ class TestDetection:
 
 
 class TestReadGate:
-    @pytest.mark.parametrize("version", ["3.0.0", "3.1.0"])
+    @pytest.mark.parametrize("version", ["3.1.0", "10.0.0"])
     def test_db_layer_refuses_even_with_explicit_path(self, fake_studio, version):
         primary = fake_studio(version)
         with pytest.raises(UnsupportedStudioLayout, match=REFUSAL):
             db.get_database_path()
         with pytest.raises(UnsupportedStudioLayout, match=REFUSAL):
             db.get_database_path(str(primary))
+        with pytest.raises(UnsupportedStudioLayout, match=REFUSAL):
+            db.get_database_path(workspace="default")
         with pytest.raises(UnsupportedStudioLayout, match=REFUSAL):
             db.list_tables()
 
@@ -248,19 +254,19 @@ class TestToolsOn3x:
 
     @pytest.mark.parametrize("tool", sorted(STUDIO_STORAGE_TOOLS))
     def test_storage_tool_returns_refusal(self, fake_studio, tool):
-        fake_studio("3.0.0")
+        fake_studio("3.1.0")
         text = _call(tool, STUDIO_STORAGE_TOOLS[tool])
         assert REFUSAL in text, f"{tool}: {text[:300]}"
 
     def test_installation_reports_refusal(self, fake_studio):
-        fake_studio("3.0.0")
+        fake_studio("3.1.0")
         data = json.loads(_call("get_msty_installation", {}))
         assert data["layout_status"] == LAYOUT_UNSUPPORTED
         assert data["database_path"] is None
         assert REFUSAL in data["schema_note"]
 
     def test_install_health_reports_refusal(self, fake_studio):
-        fake_studio("3.0.0")
+        fake_studio("3.1.0")
         assert REFUSAL in _call("get_status", {"scope": "install"})
 
     @pytest.mark.parametrize("tool", sorted(STUDIO_STORAGE_TOOLS))
@@ -273,15 +279,15 @@ class TestToolsOn3x:
         from tests.test_hybrid import APPLE_36
 
         monkeypatch.setattr("src.server._hardware_profile", lambda: APPLE_36)
-        fake_studio("3.0.0")
+        fake_studio("3.1.0")
         data = json.loads(_call("recommend_model", {}))
         assert data["hardware"]["ram_gb"] == 36.0
         assert REFUSAL in data["usage_note"]
 
     def test_service_tools_unaffected(self, fake_studio):
-        fake_studio("3.0.0")
+        fake_studio("3.1.0")
         server = json.loads(_call("get_status", {"scope": "server"}))
-        assert server["studio_target"].startswith("2.4 to 2.9.x")
+        assert server["studio_target"].startswith("2.4 to 2.9.x and 3.0.x")
         behaviours = _call("bloom_list_behaviors", {})
         assert REFUSAL not in behaviours and "Error" not in behaviours
         hardware = _call("get_hardware_profile", {})
@@ -331,8 +337,8 @@ class TestWriteGate:
     @pytest.mark.parametrize(
         "version,needle",
         [
-            ("3.0.0", REFUSAL),
             ("3.1.0", REFUSAL),
+            ("10.0.0", REFUSAL),
             ("1.5.0", OLD_REFUSAL),
             ("2.3.9", OLD_REFUSAL),
             ("9" * 5000, UNKNOWN_REFUSAL),
@@ -359,7 +365,7 @@ class TestWriteGate:
     def test_generate_persona_tool_refused_on_3x(self, fake_studio, monkeypatch, tmp_path):
         monkeypatch.setenv("MSTY_ALLOW_STUDIO_WRITES", "1")
         monkeypatch.setenv("MSTY_ADMIN_HOME", str(tmp_path / "admin"))
-        fake_studio("3.0.0")
+        fake_studio("3.1.0")
         text = _call(
             "generate_persona",
             {"name": "Gate", "system_prompt": "Be brief.", "model": "llama3.2:3b", "confirm": True},
