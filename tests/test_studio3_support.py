@@ -4,6 +4,7 @@ disposable Studio 3.0.0 Linux install (tests/fixtures/studio). No real user data
 from __future__ import annotations
 
 import asyncio
+import os
 import json
 import plistlib
 import sqlite3
@@ -422,7 +423,7 @@ class TestWriteGate3:
         conn.commit()
         conn.close()
         result = self._apply(tmp_path)
-        assert result["wrote"] is False and "read-back failed" in result["error"]
+        assert result["wrote"] is False and "write check failed" in result["error"]
         assert _count(home, "personas") == 0 and _count(home, "promptsLibraryPrompts") == 0
 
     def test_unknown_version_still_refuses_writes(self, studio, tmp_path, monkeypatch):
@@ -468,3 +469,285 @@ class TestClaudeSync:
         cfg.write_text(json.dumps({"mcpServers": {"Gold HTTP Tool": {}, "only-in-claude": {}}}))
         out = json.loads(_call("sync_claude_preferences", {}))
         assert out["missing_in_msty"] == ["only-in-claude"]
+
+
+# ---------------------------------------------------------------------------
+# v6.3.0 review fixes (Rambo L1 to L7, O1) and folded-in review probes
+# ---------------------------------------------------------------------------
+
+
+def _write(tmp_path, target=None, pack=None):
+    return writes.apply_pack(
+        pack or PACK,
+        confirm=True,
+        database_path=None if target is None else str(target),
+        imports_root=tmp_path / "imports",
+        backup_root=tmp_path / "backups",
+    )
+
+
+class TestWriteRechecks:
+    """L2: schema, migration and process checks run again under the write lock."""
+
+    def test_schema_change_after_precheck_refuses(self, studio, tmp_path, monkeypatch):
+        monkeypatch.setenv("MSTY_ALLOW_STUDIO_WRITES", "1")
+        data, _ = studio()
+        home = make_db(native(data))
+        real = writes.verify_3x_write_target
+
+        def then_alter(install, explicit=None):
+            live = real(install, explicit)
+            conn = sqlite3.connect(str(live))
+            conn.execute("ALTER TABLE personas ADD COLUMN sneaky text")
+            conn.commit()
+            conn.close()
+            return live
+
+        monkeypatch.setattr(writes, "verify_3x_write_target", then_alter)
+        result = _write(tmp_path)
+        assert result["wrote"] is False and "verified schema" in result["error"]
+        assert _count(home, "personas") == 0
+
+    def test_migration_change_after_precheck_refuses(self, studio, tmp_path, monkeypatch):
+        monkeypatch.setenv("MSTY_ALLOW_STUDIO_WRITES", "1")
+        data, _ = studio()
+        home = make_db(native(data))
+        real = writes.verify_3x_write_target
+
+        def then_migrate(install, explicit=None):
+            live = real(install, explicit)
+            conn = sqlite3.connect(str(live))
+            conn.execute("INSERT INTO __drizzle_migrations (hash, created_at) VALUES ('next', 99999999999999)")
+            conn.commit()
+            conn.close()
+            return live
+
+        monkeypatch.setattr(writes, "verify_3x_write_target", then_migrate)
+        result = _write(tmp_path)
+        assert result["wrote"] is False and "unverified latest migration" in result["error"]
+        assert _count(home, "personas") == 0
+
+    @pytest.mark.parametrize("starts_on_call", [2, 3])
+    def test_studio_starting_mid_write_refuses(self, studio, tmp_path, monkeypatch, starts_on_call):
+        """Call 1 is the pre-check, 2 is after BEGIN IMMEDIATE, 3 is just before COMMIT."""
+        monkeypatch.setenv("MSTY_ALLOW_STUDIO_WRITES", "1")
+        data, _ = studio()
+        home = make_db(native(data))
+        calls = {"n": 0}
+
+        def probe(name):
+            calls["n"] += 1
+            return calls["n"] >= starts_on_call
+
+        monkeypatch.setattr(writes, "is_process_running", probe)
+        result = _write(tmp_path)
+        assert result["wrote"] is False and "started during the write" in result["error"]
+        assert calls["n"] == starts_on_call
+        assert _count(home, "personas") == 0 and _count(home, "promptsLibraryPrompts") == 0
+
+    def test_clean_write_checks_process_three_times(self, studio, tmp_path, monkeypatch):
+        monkeypatch.setenv("MSTY_ALLOW_STUDIO_WRITES", "1")
+        data, _ = studio()
+        make_db(native(data))
+        calls = []
+        monkeypatch.setattr(writes, "is_process_running", lambda name: calls.append(name) or False)
+        assert _write(tmp_path)["wrote"] is True
+        assert len(calls) == 3
+
+
+class TestPairRedactionCoverage:
+    """L3: more credential labels, more pair shapes, JWT-shaped values."""
+
+    SHAPES = [("name", "value"), ("key", "value"), ("label", "value"), ("headerName", "headerValue"), ("k", "v")]
+
+    @pytest.mark.parametrize("label", ["jwt", "x-jwt", "passphrase", "PAT", "x-pat", "sid", "x-license", "SLACK_WEBHOOK", "Authorization", "X-Api-Key", "Ocp-Apim-Subscription-Key"])
+    @pytest.mark.parametrize("shape", SHAPES)
+    def test_credential_labels_hidden_in_every_shape(self, label, shape):
+        label_key, value_key = shape
+        out = db.redact_row({"headerList": [{label_key: label, value_key: "plain-secret-value"}]})
+        assert out["headerList"] == [{label_key: label, value_key: "[REDACTED]"}]
+
+    @pytest.mark.parametrize("label", ["Accept", "Content-Type", "path", "inside", "User-Agent"])
+    def test_plain_labels_stay_visible(self, label):
+        out = db.redact_row({"headerList": [{"name": label, "value": "text/plain"}]})
+        assert out["headerList"][0]["value"] == "text/plain"
+
+    def test_jwt_shaped_value_is_hidden_anywhere(self):
+        jwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJmaXh0dXJlIn0.c2lnbmF0dXJlLWZpeHR1cmU"
+        out = db.redact_row({"note": f"token is {jwt} ok", "pairs": [{"name": "X-Custom", "value": jwt}]})
+        assert "eyJ" not in json.dumps(out)
+
+
+class TestEnvRedaction:
+    """L4: every value under env or environment is hidden, names stay."""
+
+    def test_env_dict_values_all_hidden(self):
+        out = db.redact_row({"config": json.dumps({"command": "x", "env": {"MY_CONN": "postgres-host-1", "PATH": "/usr/bin", "EMPTY": ""}})})
+        env = json.loads(out["config"])["env"]
+        assert env == {"MY_CONN": "[REDACTED]", "PATH": "[REDACTED]", "EMPTY": ""}
+
+    @pytest.mark.parametrize("key", ["env", "environment", "Environment", "env_vars"])
+    def test_env_shapes(self, key):
+        out = db.redact_row(
+            {key: [{"name": "PLAIN", "value": "v1"}, "OTHER=v2", {"PLAIN2": "v3"}]}
+        )
+        assert out[key] == [{"name": "PLAIN", "value": "[REDACTED]"}, "OTHER=[REDACTED]", {"PLAIN2": "[REDACTED]"}]
+
+    def test_real_stdio_tool_env_hidden(self, studio):
+        data, _ = studio()
+        make_db(native(data))
+        stdio = next(t for t in GOLD["3.0.0"]["tools"] if "command" in json.loads(t["config"]))
+        out = json.loads(_call("export_tool_config", {"tool_name": stdio["name"]}))
+        env = json.loads(out["config"]["config"])["env"]
+        assert env and set(env.values()) == {"[REDACTED]"}
+
+
+class TestStrictVersion:
+    """L5: strict ASCII version parsing."""
+
+    @pytest.mark.parametrize(
+        "value,expected",
+        [
+            ("3.0.0", (3, 0, 0)),
+            ("3.0", (3, 0)),
+            ("v3.0.1", (3, 0, 1)),
+            ("3.0.0-beta.15", (3, 0, 0)),
+            ("3.0.0+build7", (3, 0, 0)),
+            ("3", None),
+            ("3,1", None),
+            ("3_1", None),
+            ("3.\u0661.0", None),
+            ("\u0663.0.0", None),
+            (" 3.1.0", None),
+            ("3.0.0 ", None),
+            ("3.0.0.0.1", None),
+            ("3.0.0junk", None),
+        ],
+    )
+    def test_parse(self, value, expected):
+        assert paths.parse_version(value) == expected
+
+    def test_loose_strings_are_unknown_not_supported(self):
+        for value in ("3", "3,1", "3.\u0661.0"):
+            assert paths.layout_status(value) == LAYOUT_UNKNOWN
+
+
+class TestUnverifiedSchemaWarning:
+    """L6: unknown version plus a schema that matches no checked release."""
+
+    def test_mismatch_adds_schema_not_verified(self, studio):
+        data, _ = studio(version=MISSING)
+        home = make_db(native(data))
+        conn = sqlite3.connect(str(home))
+        conn.execute("ALTER TABLE personas ADD COLUMN futureField text")
+        conn.commit()
+        conn.close()
+        out = json.loads(_call("list_personas", {}))
+        assert "Schema not verified" in out["warning"]
+        assert "Schema not verified" in paths.detect_msty_installation().schema_note
+
+    def test_matching_schema_has_no_such_note(self, studio):
+        data, _ = studio(version=MISSING)
+        make_db(native(data))
+        out = json.loads(_call("list_personas", {}))
+        assert "Schema not verified" not in out["warning"]
+
+
+class TestProjectionAllowList:
+    """L7: transport, auth type and OAuth mode come from an allow-list."""
+
+    @pytest.mark.parametrize(
+        "config,key,expected",
+        [
+            ({"transport": "javascript:alert(1)", "url": "https://a.example"}, "transport", "other"),
+            ({"transport": "SSE", "url": "https://a.example"}, "transport", "sse"),
+            ({"transport": "streamable-http", "url": "https://a.example"}, "transport", "streamable-http"),
+            ({"transport": "http", "auth": {"type": "oauth", "mode": "secret-in-mode"}}, "oauth_mode", "other"),
+            ({"transport": "http", "auth": {"type": "oauth", "mode": "oauth-dynamic"}}, "oauth_mode", "oauth-dynamic"),
+            ({"transport": "http", "auth": {"type": "token-xyz"}}, "auth_type", "other"),
+        ],
+    )
+    def test_allow_list(self, config, key, expected):
+        assert inventory.tool_connection(json.dumps(config))[key] == expected
+
+
+class TestMultipleActiveWorkspaces:
+    """O1: more than one active registry row is warned about, earliest still wins."""
+
+    def test_warning_and_earliest_pick(self, studio):
+        data, _ = studio()
+        make_db(native(data), extra_rows={"workspaces": [workspace_row("work", "Work", active=True)]})
+        make_db(native(data, "work"))
+        install = paths.detect_msty_installation()
+        assert install.active_workspace == "default"
+        assert "2 workspaces are marked active" in install.storage_warnings[0]
+        out = json.loads(_call("list_personas", {}))
+        assert "2 workspaces are marked active" in out["storage_warnings"][0]
+        listed = json.loads(_call("list_workspaces", {}))
+        assert listed["storage"]["warnings"]
+
+    def test_single_active_has_no_warning(self, studio):
+        data, _ = studio()
+        make_db(native(data))
+        assert "storage_warnings" not in json.loads(_call("list_personas", {}))
+
+
+class TestWritePathProbes:
+    """Folded in from the v6.3.0 review probes."""
+
+    def test_symlink_relative_and_dotdot_resolve_to_live(self, studio, tmp_path, monkeypatch):
+        monkeypatch.setenv("MSTY_ALLOW_STUDIO_WRITES", "1")
+        data, _ = studio()
+        home = make_db(native(data))
+        link = tmp_path / "link.db"
+        link.symlink_to(home)
+        for i, target in enumerate([link, home.parent / ".." / home.parent.name / "msty.cloud.db"]):
+            pack = {"personas": [{"name": f"Probe {i}", "systemPrompt": "x"}]}
+            result = _write(tmp_path, target, pack)
+            assert result["wrote"] is True and Path(result["database"]) == home
+        monkeypatch.chdir(home.parent)
+        result = _write(tmp_path, "msty.cloud.db", {"personas": [{"name": "Probe rel", "systemPrompt": "x"}]})
+        assert result["wrote"] is True and Path(result["database"]) == home
+
+    def test_other_symlink_hardlink_and_case_variant_refused(self, studio, tmp_path, monkeypatch):
+        monkeypatch.setenv("MSTY_ALLOW_STUDIO_WRITES", "1")
+        data, _ = studio()
+        home = make_db(native(data))
+        other = make_db(tmp_path / "o" / "msty.cloud.db")
+        to_other = tmp_path / "to-other.db"
+        to_other.symlink_to(other)
+        hard = tmp_path / "hard.db"
+        os.link(home, hard)
+        case = Path(str(home).replace("msty.cloud.db", "MSTY.CLOUD.DB"))
+        for target in (to_other, hard, case):
+            assert _write(tmp_path, target)["wrote"] is False, target
+        assert _count(other, "personas") == 0 and _count(home, "personas") == 0
+
+    def test_explicit_home_refused_when_other_workspace_active(self, studio, tmp_path, monkeypatch):
+        monkeypatch.setenv("MSTY_ALLOW_STUDIO_WRITES", "1")
+        data, _ = studio()
+        home = make_db(native(data), extra_rows={"workspaces": [workspace_row("work", "Work", active=True)]})
+        conn = sqlite3.connect(str(home))
+        conn.execute("UPDATE workspaces SET isActive = 0 WHERE slug = 'default'")
+        conn.commit()
+        conn.close()
+        work = make_db(native(data, "work"))
+        assert _write(tmp_path, home)["wrote"] is False
+        result = _write(tmp_path)
+        assert result["wrote"] is True and Path(result["database"]) == work
+        assert _count(home, "personas") == 0
+
+    @pytest.mark.parametrize(
+        "pack",
+        [
+            {"personas": [{"name": "A", "systemPrompt": "x"}, {"name": "A", "systemPrompt": "y"}]},
+            {"personas": [{"name": "B", "systemPrompt": "x"}], "prompts": [{"title": "T", "text": "X"}, "not-a-dict"]},
+        ],
+    )
+    def test_mid_pack_failure_rolls_back_all_tables(self, studio, tmp_path, monkeypatch, pack):
+        monkeypatch.setenv("MSTY_ALLOW_STUDIO_WRITES", "1")
+        data, _ = studio()
+        home = make_db(native(data))
+        assert _write(tmp_path, pack=pack)["wrote"] is False
+        for table in ("personas", "personaVersions", "promptsLibraryPrompts", "promptsVersions"):
+            assert _count(home, table) == 0, table

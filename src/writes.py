@@ -257,32 +257,45 @@ def verify_3x_write_target(install: MstyInstallation, explicit: Optional[str] = 
         raise UnsupportedStudioLayout("Studio 3.0 active workspace database not found.")
     conn = studio_storage.connect_readonly(live)
     try:
-        shape = studio_storage.tables_fingerprint(conn, studio_storage.WRITE_TABLES)
-        migration = studio_storage.latest_migration(conn)
-        missing = [
-            f"{table}.{col}"
-            for table, cols in GOLD_3X_COLUMNS.items()
-            for col in cols
-            if col not in table_columns(conn, table)
-        ]
+        problem = schema_problem_3x(conn)
     finally:
         conn.close()
+    if problem:
+        raise UnsupportedStudioLayout(problem)
+    return live
+
+
+def schema_problem_3x(conn: sqlite3.Connection) -> Optional[str]:
+    """Why this database's persona and prompt tables are not safe to write, or None.
+
+    Run before the write and again on the writing connection after BEGIN
+    IMMEDIATE, so a change between the two cannot slip through.
+    """
+    shape = studio_storage.tables_fingerprint(conn, studio_storage.WRITE_TABLES)
     if shape not in studio_storage.VERIFIED_3X_WRITE_FINGERPRINTS:
-        raise UnsupportedStudioLayout(
+        return (
             "Studio 3.0 persona and prompt tables do not match a verified schema, so writes "
             "are refused. Import the JSON pack in Persona Studio or Prompts Studio instead."
         )
-    if migration not in studio_storage.VERIFIED_3X_MIGRATIONS:
-        raise UnsupportedStudioLayout(
+    if studio_storage.latest_migration(conn) not in studio_storage.VERIFIED_3X_MIGRATIONS:
+        return (
             "Studio 3.0 database has an unverified latest migration, so writes are refused. "
             "Import the JSON pack in Studio instead."
         )
+    missing = [
+        f"{table}.{col}"
+        for table, cols in GOLD_3X_COLUMNS.items()
+        for col in cols
+        if col not in table_columns(conn, table)
+    ]
     if missing:
-        raise UnsupportedStudioLayout(
-            "Studio 3.0 database is missing columns Studio fills on a new row: "
-            + ", ".join(missing)
-        )
-    return live
+        return "Studio 3.0 database is missing columns Studio fills on a new row: " + ", ".join(missing)
+    return None
+
+
+STUDIO_STARTED_DURING_WRITE = (
+    "Msty Studio started during the write, so nothing was written. Quit Studio and retry."
+)
 
 
 def _read_back_3x(conn: sqlite3.Connection, applied: Dict[str, List[str]]) -> None:
@@ -840,6 +853,13 @@ def apply_pack(
     conn = connect_writable(db_path)
     try:
         conn.execute("BEGIN IMMEDIATE")
+        if studio_3:
+            # Re-check under the write lock (schema, migration, columns, process).
+            problem = schema_problem_3x(conn)
+            if problem:
+                raise WriteVerificationFailed(problem)
+            if is_process_running("MstyStudio"):
+                raise WriteVerificationFailed(STUDIO_STARTED_DURING_WRITE)
         for kind in DB_KINDS:
             table = TABLE_FOR_KIND[kind]
             items: Iterable[Any] = pack.get(kind) or []
@@ -871,6 +891,8 @@ def apply_pack(
                 applied[kind] = ids
         if studio_3:
             _read_back_3x(conn, applied)
+            if is_process_running("MstyStudio"):
+                raise WriteVerificationFailed(STUDIO_STARTED_DURING_WRITE)
         conn.execute("COMMIT")
     except WriteRejected as exc:
         try:
@@ -896,7 +918,7 @@ def apply_pack(
             "wrote": False,
             "pack_path": str(saved),
             "backup_path": str(backup),
-            "error": f"Studio 3.0 read-back failed, nothing was written: {exc}",
+            "error": f"Studio 3.0 write check failed, nothing was written: {exc}",
         }
     except sqlite3.IntegrityError as exc:
         try:

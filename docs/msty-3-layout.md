@@ -57,6 +57,7 @@ This note records how Msty Studio 3.0.0 stores workspace data, as msty-admin-mcp
 - A read-only SQLite open of a live WAL database works while Studio runs and shows current data.
 - Agent Mode sessions are files under `<data>/agents/sessions`. Only `agentModePlans` is in the database.
 - Studio 3.0.0 opened, listed, edited and saved a persona and a prompt written by this MCP. Studio kept the persona's version link and the prompt's version row.
+- The same was checked with Home still in browser storage: a 2.9.12 install upgraded in place to 3.0.0, file-based storage not turned on. A persona and a prompt written by this MCP into the browser-storage database with Studio closed were listed, opened, edited and saved after a relaunch, and `PRAGMA quick_check` stayed `ok`. Both writes reused free pages, so the file size did not change. A write that grows the file, and a crash in the middle of a write (which would leave a `-journal` file Studio does not look for), were not tested. The backup taken before every write covers both cases.
 
 ## Assumed for macOS and Windows
 
@@ -68,5 +69,6 @@ This note records how Msty Studio 3.0.0 stores workspace data, as msty-admin-mcp
 ## What this MCP does with it
 
 - Reads use the active workspace unless a `workspace` is given, and never read a stale copy.
-- Writes on Studio 3.0 go only to the active workspace's current database, need the write-table fingerprint and latest migration above, need Studio closed, and are read back before COMMIT.
+- Writes on Studio 3.0 go only to the active workspace's current database, need the write-table fingerprint and latest migration above, need Studio closed, and are read back before COMMIT. The schema, migration and Studio-running checks run again after the write lock is taken, and Studio-running is checked once more just before COMMIT.
+- If more than one workspace is marked active, the earliest created is used and results carry a `storage_warnings` entry.
 - A Studio 3.0.x patch that changes the persona or prompt tables refuses writes until its fingerprint is added after the same check. Studio 3.1 and later are refused for reads and writes.

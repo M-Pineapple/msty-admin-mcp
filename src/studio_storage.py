@@ -108,6 +108,7 @@ class StorageLayout:
     active_slug: Optional[str] = None
     stale_copies: List[Dict[str, str]] = field(default_factory=list)
     notes: List[str] = field(default_factory=list)
+    warnings: List[str] = field(default_factory=list)
 
     @property
     def uses_file_storage(self) -> bool:
@@ -129,6 +130,7 @@ class StorageLayout:
             "workspaces": [w.to_dict() for w in self.workspaces],
             "stale_copies": list(self.stale_copies),
             "notes": list(self.notes),
+            "warnings": list(self.warnings),
         }
 
 
@@ -235,6 +237,12 @@ def discover(data_path: Optional[Path], browser_home_db: Optional[Path]) -> Stor
     if not any(r.get("slug") == DEFAULT_SLUG for r in rows):
         rows.insert(0, {"id": DEFAULT_WORKSPACE_ID, "name": "Home", "slug": DEFAULT_SLUG, "isActive": 0})
     active_slug: Optional[str] = None
+    active_rows = [str(r.get("slug")) for r in rows if r.get("isActive")]
+    if len(active_rows) > 1:
+        layout.warnings.append(
+            f"{len(active_rows)} workspaces are marked active ({', '.join(active_rows)}). "
+            f"Studio keeps one. Using the earliest created, {active_rows[0]!r}."
+        )
     for row in rows:
         slug = str(row.get("slug") or "")
         if not _SLUG_RE.match(slug):

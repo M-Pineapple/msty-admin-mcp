@@ -48,7 +48,8 @@ LAYOUT_SUPPORTED = "supported"
 LAYOUT_UNSUPPORTED = "unsupported"
 LAYOUT_UNKNOWN = "unknown"
 
-_VERSION_RE = re.compile(r"^\s*v?(\d+(?:\.\d+)*)")
+# Strict: ASCII digits, 2 to 4 dotted parts, optional -prerelease or +build.
+_VERSION_RE = re.compile(r"v?(\d+(?:\.\d+){1,3})(?:[-+].*)?", re.ASCII | re.DOTALL)
 
 
 class UnsupportedStudioLayout(RuntimeError):
@@ -62,7 +63,7 @@ def parse_version(value: Optional[str]) -> Optional[Tuple[int, ...]]:
     """
     if not isinstance(value, str) or len(value) > VERSION_MAX_LEN:
         return None
-    match = _VERSION_RE.match(value)
+    match = _VERSION_RE.fullmatch(value)
     if not match:
         return None
     parts = match.group(1).split(".")
@@ -167,6 +168,7 @@ class MstyInstallation:
     workspaces: List[Dict[str, Any]] = field(default_factory=list)
     stale_copies: List[Dict[str, str]] = field(default_factory=list)
     schema_fingerprint: Optional[Dict[str, Any]] = None
+    storage_warnings: List[str] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -388,8 +390,9 @@ def _apply_studio_3_storage(install: MstyInstallation, paths: Dict[str, Optional
     install.workspaces = [w.to_dict() for w in layout.workspaces]
     install.stale_copies = list(layout.stale_copies)
     install.active_workspace = layout.active_slug
+    install.storage_warnings = list(layout.warnings)
     active = layout.active()
-    notes: List[str] = []
+    notes: List[str] = list(layout.warnings)
     if active and active.database_path:
         install.database_path = active.database_path
         if active.storage == studio_storage.STORAGE_NATIVE:
@@ -419,6 +422,8 @@ def _apply_studio_3_storage(install: MstyInstallation, paths: Dict[str, Optional
             "(see stale_copies)."
         )
     if install.layout_status == LAYOUT_UNKNOWN:
+        if not (install.schema_fingerprint or {}).get("matches_release"):
+            notes.insert(0, "Schema not verified.")
         notes.insert(0, unknown_version_file_storage_warning())
     install.schema_note = " ".join(notes)
     return True

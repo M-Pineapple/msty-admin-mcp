@@ -83,6 +83,7 @@ _SECRET_VALUE_RE = re.compile(
     r"|xox[baprs]-[A-Za-z0-9-]{10,}"
     r"|AKIA[0-9A-Z]{16}"
     r"|AIza[0-9A-Za-z_-]{32,}"
+    r"|eyJ[A-Za-z0-9_-]{5,}\.eyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]*"
     r"|Bearer\s+\S+"
     r"|-----BEGIN(?: [A-Z]+)? PRIVATE KEY-----[\s\S]*?-----END(?: [A-Z]+)? PRIVATE KEY-----"
     r")",
@@ -169,12 +170,18 @@ def _redact_secret_patterns(value: str, *, decode_hex: bool = True) -> str:
 
 # {name|key|header: label, value: secret} pairs (header and env lists). The
 # label is shown, and the value is hidden when the label names a credential.
-_PAIR_LABEL_KEYS = ("name", "key", "header", "headername")
-_PAIR_VALUE_KEYS = ("value", "val")
+_PAIR_LABEL_KEYS = ("name", "key", "header", "headername", "label", "k")
+_PAIR_VALUE_KEYS = ("value", "val", "headervalue", "v")
 _PAIR_SENSITIVE_HINTS = (
-    "auth", "token", "secret", "password", "passwd", "apikey", "cookie", "session",
-    "signature", "credential", "bearer", "privatekey", "accesskey",
+    "auth", "token", "secret", "password", "passwd", "passphrase", "apikey", "cookie",
+    "session", "signature", "credential", "bearer", "privatekey", "accesskey", "jwt",
+    "webhook", "license", "licence", "subscription",
 )
+# Short names that only count as a whole word (x-pat, PAT, sid), so "path" or
+# "inside" stay visible.
+_PAIR_SENSITIVE_WORDS = frozenset({"pat", "sid", "jwt"})
+# Every value under these keys is hidden. Only names are returned.
+_ENV_KEYS = frozenset({"env", "environment", "envvars", "environmentvariables"})
 
 
 def _pair_parts(value: Dict[str, Any]) -> Optional[Tuple[str, str, str]]:
@@ -192,7 +199,49 @@ def _pair_parts(value: Dict[str, Any]) -> Optional[Tuple[str, str, str]]:
 
 def _pair_label_is_sensitive(label: str) -> bool:
     folded = re.sub(r"[^a-z0-9]", "", label.lower())
-    return _is_sensitive_key(label) or any(hint in folded for hint in _PAIR_SENSITIVE_HINTS)
+    words = set(re.split(r"[^a-z0-9]+", label.lower()))
+    return (
+        _is_sensitive_key(label)
+        or any(hint in folded for hint in _PAIR_SENSITIVE_HINTS)
+        or bool(words & _PAIR_SENSITIVE_WORDS)
+    )
+
+
+def _is_env_key(key: str) -> bool:
+    return re.sub(r"[^a-z0-9]", "", str(key).lower()) in _ENV_KEYS
+
+
+def _redact_env(value: Any) -> Any:
+    """Keep variable names and hide every value (env dicts, pair lists, KEY=VALUE)."""
+    if isinstance(value, dict):
+        parts = _pair_parts(value)
+        if parts is not None:
+            label_key, label, value_key = parts
+            out: Dict[str, Any] = {}
+            for k, v in value.items():
+                if k == label_key:
+                    out[k] = _redact_secret_patterns(label)
+                elif k == value_key:
+                    out[k] = "[REDACTED]" if v not in (None, "") else v
+                else:
+                    out[k] = redact_value(k, v)
+            return out
+        return {k: ("[REDACTED]" if v not in (None, "") else v) for k, v in value.items()}
+    if isinstance(value, list):
+        items: list = []
+        for item in value:
+            if isinstance(item, str) and "=" in item:
+                items.append(item.split("=", 1)[0] + "=[REDACTED]")
+            elif isinstance(item, (dict, list)):
+                items.append(_redact_env(item))
+            elif isinstance(item, str):
+                items.append(_redact_secret_patterns(item))
+            else:
+                items.append(item)
+        return items
+    if isinstance(value, str) and value:
+        return "[REDACTED]"
+    return value
 
 
 def _redact_pair(value: Dict[str, Any], parts: Tuple[str, str, str]) -> Dict[str, Any]:
@@ -215,6 +264,8 @@ def redact_value(key: str, value: Any) -> Any:
         if parsed is not None:
             redacted = redact_value(key, parsed)
             return json.dumps(redacted) if not isinstance(redacted, str) else redacted
+        if _is_env_key(key):
+            return _redact_env(value)
         if _is_sensitive_key(key) and value not in (None, "", [], {}):
             return "[REDACTED]"
         if key.lower() in _COMMAND_LINE_COLUMNS:
@@ -222,6 +273,8 @@ def redact_value(key: str, value: Any) -> Any:
         return _redact_secret_patterns(value)
     if _is_sensitive_key(key) and value not in (None, "", [], {}):
         return "[REDACTED]"
+    if _is_env_key(key):
+        return _redact_env(value)
     if isinstance(value, dict):
         parts = _pair_parts(value)
         if parts is not None:
@@ -454,16 +507,29 @@ def with_read_warning(payload: Any) -> Any:
     try:
         install = detect_msty_installation()
         status, layout = install.layout_status, install.layout
+        fingerprint = install.schema_fingerprint or {}
+        storage_warnings = list(install.storage_warnings or [])
     except Exception:
-        status, layout = LAYOUT_UNKNOWN, None
+        status, layout, fingerprint, storage_warnings = LAYOUT_UNKNOWN, None, {}, []
     if status == LAYOUT_UNKNOWN:
         payload = dict(payload)
-        payload["warning"] = (
-            unknown_version_file_storage_warning()
-            if layout == "studio_3x_file_storage"
-            else unknown_version_read_warning()
-        )
+        if layout and layout.startswith("studio_3x_"):
+            warning = unknown_version_file_storage_warning()
+            if not fingerprint.get("matches_release"):
+                warning += " " + SCHEMA_NOT_VERIFIED
+            payload["warning"] = warning
+        else:
+            payload["warning"] = unknown_version_read_warning()
+    if storage_warnings:
+        payload = dict(payload)
+        payload["storage_warnings"] = storage_warnings
     return payload
+
+
+SCHEMA_NOT_VERIFIED = (
+    "Schema not verified: this database does not match a Studio release this MCP "
+    "has checked, so columns or meanings may differ."
+)
 
 
 def get_database_path(

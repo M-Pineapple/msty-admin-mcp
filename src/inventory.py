@@ -370,6 +370,15 @@ def catalogue_summary(workspace: Optional[str] = None) -> Dict[str, Any]:
     return summary
 
 
+KNOWN_TRANSPORTS = frozenset({"http", "sse", "stdio", "streamable-http"})
+KNOWN_OAUTH_MODES = frozenset({"oauth", "oauth-dynamic"})
+KNOWN_AUTH_TYPES = frozenset({"bearer", "oauth", "none"})
+
+
+def _allowed(value: str, allowed: frozenset) -> str:
+    return value if value in allowed else "other"
+
+
 def tool_connection(config: Any) -> Dict[str, Any]:
     """Safe projection of one Toolbox tool config. Never returns a value.
 
@@ -390,6 +399,8 @@ def tool_connection(config: Any) -> Dict[str, Any]:
     transport = str(config.get("transport") or config.get("type") or "").lower()
     if not transport:
         transport = "stdio" if "command" in config else "unknown"
+    else:
+        transport = _allowed(transport, KNOWN_TRANSPORTS)
     out: Dict[str, Any] = {"transport": transport}
     url = config.get("url")
     if isinstance(url, str) and url:
@@ -411,10 +422,10 @@ def tool_connection(config: Any) -> Dict[str, Any]:
     if transport != "stdio":
         auth = config.get("auth")
         if isinstance(auth, dict):
-            auth_type = str(auth.get("type") or "unknown").lower()
+            auth_type = _allowed(str(auth.get("type") or "").lower(), KNOWN_AUTH_TYPES)
             out["auth_type"] = auth_type
             if auth_type == "oauth":
-                out["oauth_mode"] = str(auth.get("mode") or "oauth")
+                out["oauth_mode"] = _allowed(str(auth.get("mode") or "oauth").lower(), KNOWN_OAUTH_MODES)
                 out["oauth_client_id_set"] = bool(auth.get("clientId"))
                 out["oauth_status"] = "not_stored_in_workspace"
         else:

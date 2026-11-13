@@ -30,6 +30,17 @@ Msty Studio 3.0 support. Studio 2.4 to 2.9.x and 3.0.x are supported. Studio 3.1
 - The Studio 2.5 upgrade hint compares versions as numbers, not strings.
 - Windows and Linux paths no longer use an empty path for the app bundle, which resolved to the working directory.
 
+### Review fixes
+
+- A 3.0 write to a Home workspace still in browser storage was tested on a real Studio 3.0.0 upgraded from 2.9.12. Studio listed, opened, edited and saved the persona and prompt after a relaunch, so the case stays allowed. See `docs/msty-3-layout.md`.
+- The schema, migration and Studio-running checks run again on the writing connection after `BEGIN IMMEDIATE`, and Studio-running is checked again just before `COMMIT`. A change in between rolls the write back.
+- Pair redaction also hides values for `jwt`, `passphrase`, `pat`, `sid`, licence, webhook and subscription labels, and recognises `label`/`value`, `headerName`/`headerValue` and `k`/`v` pairs. JWT-shaped values are hidden wherever they appear.
+- Every value under an `env` or `environment` key is hidden. Variable names stay.
+- Version parsing is strict: ASCII digits, 2 to 4 dotted parts and an optional `-` or `+` suffix. Anything else is unknown.
+- On an unknown version, reads add "Schema not verified" to the warning when the database matches no checked release.
+- `connection` reports transport, auth type and OAuth mode from a fixed list, and `other` for anything else.
+- When more than one workspace is marked active, results carry `storage_warnings`. The earliest created is still used.
+
 ### Not changed
 
 - On Windows and Linux the Studio version still cannot be read, so persona and prompt writes stay refused there. Reads of Studio 3.0 file-based storage work and carry a warning that names the storage found.
