@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import platform
 import sys
 import time
 import uuid
@@ -237,7 +239,7 @@ def _install_health_payload() -> Dict[str, Any]:
 def get_msty_installation() -> str:
     install = _detect_install()
     payload = install.to_dict()
-    payload["paths"] = {k: str(v) for k, v in get_msty_paths().items()}
+    payload["paths"] = {k: (str(v) if v else None) for k, v in get_msty_paths().items()}
     return _json(payload)
 
 
@@ -421,6 +423,18 @@ def export_tool_config(
     )
 
 
+def _claude_desktop_config() -> Path:
+    """Claude Desktop config path for this platform."""
+    system = platform.system()
+    if system == "Darwin":
+        base = Path.home() / "Library" / "Application Support" / "Claude"
+    elif system == "Windows":
+        base = Path(os.environ.get("APPDATA") or Path.home() / "AppData" / "Roaming") / "Claude"
+    else:
+        base = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "Claude"
+    return base / "claude_desktop_config.json"
+
+
 @mcp.tool(
     **ann("Sync Claude preferences", read_only=True),
     description=(
@@ -430,7 +444,7 @@ def export_tool_config(
     ),
 )
 def sync_claude_preferences() -> str:
-    claude_cfg = Path.home() / "Library" / "Application Support" / "Claude" / "claude_desktop_config.json"
+    claude_cfg = _claude_desktop_config()
     msty_tools = inventory.list_entities("tools", limit=500)
     claude_servers = {}
     if claude_cfg.exists():
@@ -445,6 +459,9 @@ def sync_claude_preferences() -> str:
             "timestamp": datetime.now().isoformat(),
             "claude_servers": list(claude_servers.keys()),
             "msty_tools": [t.get("name") for t in msty_tools.get("items", [])],
+            "missing_in_msty": sorted(
+                set(claude_servers) - {t.get("name") for t in msty_tools.get("items", [])}
+            ),
             "preferences_synced": 0,
             "note": "v6 reports the delta only; write-import remains user-confirmed via Toolbox / import_tool_config.",
         }

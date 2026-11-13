@@ -3,6 +3,12 @@
 Tools, toolsets and skills are never inserted into Studio SQLite. Personas
 and prompts need ``confirm=true`` and ``MSTY_ALLOW_STUDIO_WRITES=1`` in the
 server environment. MCP tools must not expose ``database_path``.
+
+Studio 3.0 writes have extra gates (see verify_3x_write_target): the target
+must be the active workspace's current database, its persona and prompt tables
+must match a schema verified on a real Studio 3.0 install, Studio must not be
+running, and every inserted row is read back inside the transaction before
+COMMIT.
 """
 
 from __future__ import annotations
@@ -16,6 +22,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence
 
+from src import studio_storage
 from src.paths import (
     LAYOUT_SUPPORTED,
     LAYOUT_UNSUPPORTED,
@@ -23,6 +30,7 @@ from src.paths import (
     UnsupportedStudioLayout,
     detect_msty_installation,
     is_process_running,
+    is_studio_3,
     unknown_version_write_message,
     unsupported_layout_message,
 )
@@ -69,6 +77,37 @@ NO_PROMPT_FOLDER = (
     "No promptsLibraryFolders row. Prompts are saved as a JSON pack only. "
     "This MCP does not create folders. Add a folder in Msty, then retry."
 )
+
+
+# Columns Studio 3.0.0 fills on a persona or prompt it creates (gold rows in
+# tests/fixtures/studio/studio-gold-rows.json). A 3.x write needs them all
+# present, and reads them back non-NULL before COMMIT.
+GOLD_3X_COLUMNS = {
+    "personas": (
+        "id", "name", "systemPrompt", "folderId", "colorIcon", "extras",
+        "activeVersionId", "createdAt", "partialSelectableAttachments",
+    ),
+    "personaVersions": (
+        "id", "personaId", "versionNumber", "name", "colorIcon", "systemPrompt",
+        "extras", "createdAt", "partialSelectableAttachments", "tags",
+    ),
+    "promptsLibraryPrompts": (
+        "id", "title", "text", "folderId", "source", "isBookmarked", "createdAt",
+    ),
+    "promptsVersions": (
+        "id", "promptId", "versionNumber", "title", "text", "changelog", "createdAt",
+    ),
+}
+_GOLD_3X_JSON = {
+    "personas": ("systemPrompt", "colorIcon", "extras", "partialSelectableAttachments"),
+    "personaVersions": ("systemPrompt", "colorIcon", "extras", "partialSelectableAttachments", "tags"),
+}
+PROMPT_SOURCE_CUSTOM = "custom"
+PROMPT_INITIAL_CHANGELOG = "Initial version"
+
+
+class WriteVerificationFailed(RuntimeError):
+    """Read-back inside the write transaction did not match a Studio-created row."""
 
 
 class WriteRejected(ValueError):
@@ -169,6 +208,8 @@ def resolve_database_path(explicit: Optional[str] = None) -> Optional[Path]:
     blocked = studio_write_block(install)
     if blocked:
         raise UnsupportedStudioLayout(blocked)
+    if is_studio_3(install.version):
+        return verify_3x_write_target(install, explicit)
     if explicit:
         path = Path(explicit)
         return path if path.exists() else None
@@ -176,6 +217,121 @@ def resolve_database_path(explicit: Optional[str] = None) -> Optional[Path]:
         candidate = Path(install.database_path)
         return candidate if candidate.exists() else None
     return None
+
+
+def _same_file(a: Path, b: Path) -> bool:
+    try:
+        return a.resolve() == b.resolve()
+    except OSError:
+        return False
+
+
+def verify_3x_write_target(install: MstyInstallation, explicit: Optional[str] = None) -> Path:
+    """Return the only database a Studio 3.0 write may touch, or raise.
+
+    The target is the active workspace's current database. An explicit path
+    must be that same file, so a stale browser-storage copy or another
+    workspace can never be written. The persona and prompt tables must match
+    a shape verified on a real Studio 3.0 install, with the matching latest
+    migration.
+    """
+    if install.layout not in ("studio_3x_file_storage", "studio_3x_browser_storage") or not install.database_path:
+        raise UnsupportedStudioLayout(
+            "Studio 3.0 writes need a readable active workspace database. "
+            + (install.schema_note or "None was found.")
+        )
+    live = Path(install.database_path)
+    if explicit:
+        target = Path(explicit)
+        stale = any(
+            _same_file(target, Path(copy["path"]))
+            for copy in install.stale_copies or []
+            if isinstance(copy, dict) and copy.get("path")
+        )
+        if stale or not _same_file(target, live):
+            raise UnsupportedStudioLayout(
+                "On Studio 3.0 writes go only to the active workspace's current database. "
+                + ("This path is a stale copy that Studio no longer reads." if stale else "This path is not it.")
+            )
+    if not live.is_file():
+        raise UnsupportedStudioLayout("Studio 3.0 active workspace database not found.")
+    conn = studio_storage.connect_readonly(live)
+    try:
+        shape = studio_storage.tables_fingerprint(conn, studio_storage.WRITE_TABLES)
+        migration = studio_storage.latest_migration(conn)
+        missing = [
+            f"{table}.{col}"
+            for table, cols in GOLD_3X_COLUMNS.items()
+            for col in cols
+            if col not in table_columns(conn, table)
+        ]
+    finally:
+        conn.close()
+    if shape not in studio_storage.VERIFIED_3X_WRITE_FINGERPRINTS:
+        raise UnsupportedStudioLayout(
+            "Studio 3.0 persona and prompt tables do not match a verified schema, so writes "
+            "are refused. Import the JSON pack in Persona Studio or Prompts Studio instead."
+        )
+    if migration not in studio_storage.VERIFIED_3X_MIGRATIONS:
+        raise UnsupportedStudioLayout(
+            "Studio 3.0 database has an unverified latest migration, so writes are refused. "
+            "Import the JSON pack in Studio instead."
+        )
+    if missing:
+        raise UnsupportedStudioLayout(
+            "Studio 3.0 database is missing columns Studio fills on a new row: "
+            + ", ".join(missing)
+        )
+    return live
+
+
+def _read_back_3x(conn: sqlite3.Connection, applied: Dict[str, List[str]]) -> None:
+    """Check inserted rows match Studio 3.0's own rows before COMMIT."""
+
+    def row(table: str, where: str, value: str) -> Dict[str, Any]:
+        found = conn.execute(
+            f'SELECT rowid AS _rowid, * FROM "{table}" WHERE "{where}" = ?', (value,)
+        ).fetchall()
+        if len(found) != 1:
+            raise WriteVerificationFailed(f"{table} row for {value} not found exactly once")
+        data = dict(found[0])
+        for col in GOLD_3X_COLUMNS[table]:
+            if data.get(col) is None:
+                raise WriteVerificationFailed(f"{table}.{col} is NULL")
+        for col in _GOLD_3X_JSON.get(table, ()):
+            try:
+                json.loads(data[col])
+            except (TypeError, ValueError) as exc:
+                raise WriteVerificationFailed(f"{table}.{col} is not valid JSON") from exc
+        return data
+
+    rowids: Dict[str, set] = {}
+    for persona_id in applied.get("personas", []):
+        persona = row("personas", "id", persona_id)
+        prompt = json.loads(persona["systemPrompt"])
+        if not isinstance(prompt, dict) or not isinstance(prompt.get("text"), str) or prompt.get("mode") not in _VALID_PROMPT_MODES:
+            raise WriteVerificationFailed("personas.systemPrompt is not {text, mode}")
+        version = row("personaVersions", "id", persona["activeVersionId"])
+        if version["personaId"] != persona_id:
+            raise WriteVerificationFailed("personaVersions row does not link to the persona")
+        rowids.setdefault("personas", set()).add(persona["_rowid"])
+        rowids.setdefault("personaVersions", set()).add(version["_rowid"])
+    for prompt_id in applied.get("prompts", []):
+        prompt = row("promptsLibraryPrompts", "id", prompt_id)
+        if prompt["source"] != PROMPT_SOURCE_CUSTOM:
+            raise WriteVerificationFailed("promptsLibraryPrompts.source is not custom")
+        version = row("promptsVersions", "promptId", prompt_id)
+        if version["text"] != prompt["text"]:
+            raise WriteVerificationFailed("promptsVersions text does not match the prompt")
+        rowids.setdefault("promptsLibraryPrompts", set()).add(prompt["_rowid"])
+        rowids.setdefault("promptsVersions", set()).add(version["_rowid"])
+    for table, ids in rowids.items():
+        for violation in conn.execute(f'PRAGMA foreign_key_check("{table}")'):
+            if violation[1] in ids:
+                raise WriteVerificationFailed(f"{table} row breaks a foreign key")
+    check = conn.execute("PRAGMA quick_check").fetchone()
+    if not check or str(check[0]).lower() != "ok":
+        raise WriteVerificationFailed("PRAGMA quick_check did not return ok")
 
 
 def is_live_studio_database(path: Path) -> bool:
@@ -192,9 +348,13 @@ def is_live_studio_database(path: Path) -> bool:
 def studio_holds_live_database(path: Path) -> bool:
     """True when this path is the live Studio DB and a Studio process is running.
 
-    Process name live-observed on macOS: MstyStudio (app and Helper children).
+    Process name live-observed on macOS: MstyStudio (app and Helper children),
+    and on Linux: mstystudio (the match is case-insensitive). On Studio 3.0 any
+    running Studio refuses, whichever database is targeted.
     is_process_running fails closed, so an unknown probe refuses the write.
     """
+    if is_studio_3(detect_msty_installation().version):
+        return is_process_running("MstyStudio")
     if not is_live_studio_database(path):
         return False
     return is_process_running("MstyStudio")
@@ -508,7 +668,9 @@ def _insert_persona(
     return persona_id
 
 
-def _insert_prompt(conn: sqlite3.Connection, item: Dict[str, Any]) -> str:
+def _insert_prompt(
+    conn: sqlite3.Connection, item: Dict[str, Any], studio_3: bool = False
+) -> str:
     columns = table_columns(conn, "promptsLibraryPrompts")
     title = str(item.get("title") or item.get("name") or "").strip()
     text = item.get("text") or item.get("prompt")
@@ -523,27 +685,40 @@ def _insert_prompt(conn: sqlite3.Connection, item: Dict[str, Any]) -> str:
     prompt_id = new_ulid()
     created = _sql_now()
     extras = _json_text(item.get("extras"), DEFAULT_EXTRAS)
+    # Studio marks prompts it creates as source "custom". The column default
+    # "ootb" is for prompts Studio ships.
     prompt_row = {
         "id": prompt_id,
         "title": title,
         "text": text,
         "folderId": folder_id,
+        "source": PROMPT_SOURCE_CUSTOM,
         "activeVersionId": prompt_id,
         "createdAt": created,
         "extras": extras,
     }
+    version_id = prompt_id
+    if studio_3:
+        # Gold Studio 3.0.0 row: no activeVersionId, extras NULL unless given,
+        # and the version has its own id and an "Initial version" changelog.
+        version_id = new_ulid()
+        prompt_row["activeVersionId"] = None
+        prompt_row["isBookmarked"] = 0
+        prompt_row["extras"] = _json_text(item.get("extras"))
     insert_row(conn, "promptsLibraryPrompts", _row_for_columns(prompt_row, columns))
     if _table_exists(conn, "promptsVersions"):
         version_columns = table_columns(conn, "promptsVersions")
         version_row = {
-            "id": prompt_id,
+            "id": version_id,
             "promptId": prompt_id,
             "versionNumber": 1,
             "title": title,
             "text": text,
             "createdAt": created,
-            "extras": extras,
+            "extras": prompt_row["extras"],
         }
+        if studio_3:
+            version_row["changelog"] = PROMPT_INITIAL_CHANGELOG
         insert_row(
             conn, "promptsVersions", _row_for_columns(version_row, version_columns)
         )
@@ -638,6 +813,7 @@ def apply_pack(
         result["error"] = PACK_ONLY_NOTE
         return result
 
+    studio_3 = is_studio_3(detect_msty_installation().version)
     try:
         db_path = resolve_database_path(database_path)
     except UnsupportedStudioLayout as exc:
@@ -690,9 +866,11 @@ def apply_pack(
                 for item in items:
                     if not isinstance(item, dict):
                         raise ValueError("prompts entries must be objects")
-                    ids.append(_insert_prompt(conn, item))
+                    ids.append(_insert_prompt(conn, item, studio_3=studio_3))
             if ids:
                 applied[kind] = ids
+        if studio_3:
+            _read_back_3x(conn, applied)
         conn.execute("COMMIT")
     except WriteRejected as exc:
         try:
@@ -706,6 +884,19 @@ def apply_pack(
             "pack_path": str(saved),
             "backup_path": str(backup),
             "error": str(exc),
+        }
+    except WriteVerificationFailed as exc:
+        try:
+            conn.execute("ROLLBACK")
+        except sqlite3.Error:
+            pass
+        conn.close()
+        return {
+            "status": "refused",
+            "wrote": False,
+            "pack_path": str(saved),
+            "backup_path": str(backup),
+            "error": f"Studio 3.0 read-back failed, nothing was written: {exc}",
         }
     except sqlite3.IntegrityError as exc:
         try:
