@@ -2,7 +2,7 @@
 
 <img src="assets/logo.svg" alt="Msty Admin MCP logo" width="240"/>
 
-# Msty Admin MCP v6.2.2
+# Msty Admin MCP v6.3.0
 
 [![Licence: MIT](https://img.shields.io/github/license/M-Pineapple/msty-admin-mcp)](LICENSE)
 [![Python](https://img.shields.io/badge/Python-3.10+-3776AB?logo=python&logoColor=white)](https://www.python.org)
@@ -13,8 +13,8 @@
 
 > Unofficial community project. Not affiliated with, or endorsed by, Msty. Msty is a trademark of its owner.
 
-> [!WARNING]
-> **Msty Studio 3.x is not supported yet.** Studio 3.0 can move workspaces to file-based storage, which this release cannot read safely. From v6.2.2 the server detects Studio 3.x and turns off every Studio read and write, so it never reports a stale copy as current or writes a row Studio 3.0 may reject. Model, service, Nexus, calibration and Bloom tools still work. Supported Studio versions are 2.4 to 2.9.x. Persona and prompt writes need a detected Studio 2.4 to 2.9.x, so they are refused when the version cannot be read. On Windows and Linux the Studio version cannot be read yet, so persona and prompt writes are refused there. Import the saved JSON pack in Persona Studio instead. If you rely on the Studio data tools, stay on the Studio 2.x update line for now. Studio 2.x installs stay on that line until you choose the 3.x track.
+> [!NOTE]
+> **Msty Studio 3.0 support (v6.3.0).** Supported Studio versions are 2.4 to 2.9.x and 3.0.x. Studio 3.1 and later are refused until their storage is checked. On Studio 3.0 the server finds every workspace, reads the active one by default, and takes a `workspace` argument on the Studio read tools. It reads file-based workspace storage, custom workspace folders and the Home workspace in browser storage, and it never reads the stale browser-storage copy that Studio leaves behind when storage moves to files. A non-Home workspace that is still in browser storage is listed but cannot be read. Persona and prompt writes need a detected Studio 2.4 to 2.9.x or 3.0.x. On 3.0 a write also needs persona and prompt tables that match the schema checked on a real Studio 3.0.0 install, Studio fully closed, and a read-back of every new row before the change is kept. On Windows and Linux the Studio version cannot be read yet, so persona and prompt writes are refused there. Import the saved JSON pack in Persona Studio instead. Studio 3.0 storage was checked on a Linux install. The macOS paths follow the same Electron rules but were not checked on a Mac. The detail is in [docs/msty-3-layout.md](docs/msty-3-layout.md).
 
 <img src="assets/demo.gif" alt="msty-admin-mcp answering initialize and listing its tools" width="720"/>
 
@@ -187,7 +187,7 @@ Msty Studio users who want their usual AI app to help choose, test and organise 
 
 - Inventory, analytics and free-form SQL stay **read only**. Credential columns always read as NULL. Secrets typed into free text, such as a chat message or a note, are out of scope.
 - Write tools always save a JSON pack under `~/.msty-admin/imports/` (mode `0600`, directory `0700`). `import_tool_config` and the tools, toolsets and skills keys of `import_studio_pack` never write the Studio database. Import that pack in Toolbox. Configs with `command`, `args` or `env` are flagged as running a program on your machine.
-- Personas and prompts insert into Studio SQLite only when `confirm=true`, the operator env `MSTY_ALLOW_STUDIO_WRITES=1` and a detected Studio 2.4 to 2.9.x are all present. On Windows and Linux the Studio version cannot be read yet, so these writes are refused there. The LLM cannot set that env through a tool argument. Writes take a SQLite backup (including WAL) under `~/.msty-admin/backups/` and refuse while Msty Studio is running against the live database. Tests use fixture copies, never the live DB.
+- Personas and prompts insert into Studio SQLite only when `confirm=true`, the operator env `MSTY_ALLOW_STUDIO_WRITES=1` and a detected Studio 2.4 to 2.9.x or 3.0.x are all present. On Studio 3.0 the write goes only to the active workspace, refuses unless the persona and prompt tables match a verified Studio 3.0 schema, and is rolled back unless every new row reads back the way Studio writes it. On Windows and Linux the Studio version cannot be read yet, so these writes are refused there. The LLM cannot set that env through a tool argument. Writes take a SQLite backup (including WAL) under `~/.msty-admin/backups/` and refuse while Msty Studio is running against the live database. On Studio 3.0 any running Studio refuses the write. Tests use fixture copies, never the live DB.
 - `query_local_ai_service` is allow-listed (tags, version, show, chat). Pull and create go through `install_model` and `set_model_settings`, which also need `confirm=true`.
 - Calibration and Bloom history live under `~/.msty-admin/`, not in Studio.
 - Frontier needs `CURSOR_API_KEY` for Cursor, `XAI_API_KEY` for Grok, or `ANTHROPIC_API_KEY` for Claude. Keys stay in Msty's toolbox environment and never belong in this repository. In ask mode the Cursor agent does not send mail, move or delete files, or use trading tools.
@@ -218,7 +218,7 @@ If you already have Python 3.10+ as `python3`, `python3 -m venv .venv` is enough
 
 If `pip install msty-admin-mcp` cannot find the package, install the release straight from GitHub:
 ```bash
-pip install "msty-admin-mcp @ git+https://github.com/M-Pineapple/msty-admin-mcp@v6.2.2"
+pip install "msty-admin-mcp @ git+https://github.com/M-Pineapple/msty-admin-mcp@v6.3.0"
 ```
 
 ### With HTTP Transport
@@ -311,6 +311,22 @@ Msty Studio no longer uses a top-level `msty.db`. The workspace SQLite lives und
 
 The MCP auto-detects `/Applications/MstyStudio.app`, reads the bundle version, resolves the SQLite blob, and opens it **read-only**.
 
+### Studio 3.0 data layout
+
+Studio 3.0 can keep each workspace in its own file. A fresh 3.0 install uses files from the start. An upgrade from 2.x keeps the browser-storage database until you turn on file-based storage in Settings, Data.
+
+```
+<Studio data folder>/
+├── data/
+│   ├── workspaces/default/msty.cloud.db     # Home workspace
+│   ├── workspaces/<slug>/msty.cloud.db      # other workspaces
+│   └── workspace-locations.json             # custom folders, {"<slug>": {"parentPath": "/abs"}}
+├── secrets.json                             # encrypted by Studio, never read by this MCP
+└── File System/000/t/00/00000000            # browser storage, stale once Home moves to a file
+```
+
+The workspace list and the active workspace come from the `workspaces` table in the Home database. Each database is matched against schema fingerprints taken from real Studio 2.9.12 and 3.0.0 installs, reported as `schema_fingerprint` by `get_msty_installation`. See [docs/msty-3-layout.md](docs/msty-3-layout.md) for what was checked and what is assumed.
+
 ### Service discovery
 
 ```
@@ -400,14 +416,15 @@ The admin server still has the Studio inventory tools. Add the Frontier server a
 - `get_msty_installation`: app, version, DB path, ports
 - `read_msty_database`: `stats` / `tables` / read-only SQL
   - In read-only SQL, credential columns (key, token, secret, password, auth and header names, URL, config/JSON and command-line columns) always read as NULL. Secrets typed into arbitrary free-text columns, such as a chat message or a note, are out of scope for this tool.
-- `list_configured_tools`: Toolbox MCP tools
+- `list_configured_tools`: Toolbox MCP tools, each with a `connection` summary (transport, auth type, OAuth mode, URL host, header and env names). No secret value is returned. OAuth tokens sit in Studio's encrypted secrets store, not the workspace database, so OAuth status reads as `not_stored_in_workspace`
 - `get_model_providers`: services and Studio providers (keys redacted)
+  - Header and environment lists stored as name and value pairs show the name and hide the value when the name looks like a credential, for example `Authorization` or `X-Api-Key`.
 - `get_status`: MCP, install and local service health. `scope` is `all`, `server`, `install` or `services`
 
 ### Phase 2: Configuration (5)
 - `export_tool_config`: export a tool by name/id
-- `sync_claude_preferences`: Claude to Msty delta report
-- `generate_persona`: persona JSON pack. SQLite insert needs `confirm=true`, `MSTY_ALLOW_STUDIO_WRITES=1` and a detected Studio 2.4 to 2.9.x, so it is refused on Windows and Linux
+- `sync_claude_preferences`: Claude to Msty delta report, with `missing_in_msty`. Reads the Claude Desktop config on macOS, Windows and Linux
+- `generate_persona`: persona JSON pack. SQLite insert needs `confirm=true`, `MSTY_ALLOW_STUDIO_WRITES=1` and a detected Studio 2.4 to 2.9.x or 3.0.x, so it is refused on Windows and Linux
 - `import_tool_config`: JSON pack for Toolbox. Never writes the Studio database
 - `import_studio_pack`: tools, toolsets and skills stay in the JSON pack. Personas and prompts need the env gate
 
@@ -435,12 +452,16 @@ The admin server still has the Studio inventory tools. Add the Frontier server a
 - `bloom_check_handoff`, `bloom_get_history`
 - `bloom_list_behaviors`, `bloom_get_thresholds`, `bloom_validate_model`
 
-### Phase 7: Studio 2.9 Inventory (15)
+### Phase 7: Studio 2.9 and 3.0 Inventory (15)
 - `list_studio_catalogue`, `list_workspaces`, `list_personas`
 - `list_shadow_personas`, `list_crews`, `list_knowledge_stacks`
 - `list_turnstiles`, `list_skills`, `list_live_contexts`, `list_prompts`
 - `list_context_studio`, `list_agent_plans`
 - `get_studio_entity` (plural keys such as `personas`, plus singular aliases such as `persona`), `get_schema_migrations`, `export_workflow_pack`
+- Every Phase 7 tool except `list_workspaces` takes an optional `workspace` (name, slug or id). Omit it for the active workspace. `read_msty_database`, `list_configured_tools` and `export_tool_config` take it too
+- `list_workspaces` adds a `storage` key on Studio 3.0 with each workspace's storage, the active workspace and any stale copy
+- `list_crews` adds crew `folders` on Studio 3.0
+- A column missing from a newer Studio schema is skipped and listed in `missing_columns`, so the read still works
 
 ### Phase 8: Nexus Bridge (3)
 - `get_nexus`, `query_nexus`, `get_insights_usage`
@@ -464,7 +485,7 @@ See the **[Bloom Knowledge Base Guide](docs/BLOOM_GUIDE.md)**.
 pytest tests/ -v
 ```
 
-v6 ships unit tests for path resolution, read-only SQL guards, redaction, inventory/analytics, and MCP tool JSON contracts. Live smoke on Studio 2.9.2 was verified during release.
+v6 ships unit tests for path resolution, read-only SQL guards, redaction, inventory/analytics, and MCP tool JSON contracts. Live smoke on Studio 2.9.2 was verified during release. The Studio 3.0 tests use schema dumps and Studio-created rows from disposable Studio 2.9.12 and 3.0.0 installs, stored in `tests/fixtures/studio/`. A persona and a prompt written by v6.3.0 were opened, edited and saved in a real Studio 3.0.0 on Linux.
 
 ---
 
@@ -477,10 +498,10 @@ v6 ships unit tests for path resolution, read-only SQL guards, redaction, invent
 **A**: v5 looked for `~/Library/Application Support/Msty/msty.db`. Studio 2.x stores data under `MstyStudio` and the Chromium File System SQLite path. v6 fixes this.
 
 ### Q: Can I use this with Msty &lt; 2.4.0?
-**A**: No. v6 targets Studio 2.9+ (works on 2.4+ layouts when the File System DB is present). Use v4.x for older process-based detection.
+**A**: No. v6 targets Studio 2.9 and 3.0.x (works on 2.4+ layouts when the File System DB is present). Use v4.x for older process-based detection.
 
 ### Q: Does this write to the Studio database?
-**A**: Inventory and analytics stay read-only. Write tools always save a JSON pack under `~/.msty-admin/imports/`. Tools, toolsets and skills are import-file only. Personas and prompts insert into Studio SQLite only with `confirm=true`, `MSTY_ALLOW_STUDIO_WRITES=1` in the MCP server environment and a detected Studio 2.4 to 2.9.x, after a timestamped SQLite backup that includes WAL, and they refuse while Msty Studio is running against the live database. Quit Studio first, or import the JSON pack in Persona Studio or Toolbox. On Windows and Linux the Studio version cannot be read yet, so these writes are refused there.
+**A**: Inventory and analytics stay read-only. Write tools always save a JSON pack under `~/.msty-admin/imports/`. Tools, toolsets and skills are import-file only. Personas and prompts insert into Studio SQLite only with `confirm=true`, `MSTY_ALLOW_STUDIO_WRITES=1` in the MCP server environment and a detected Studio 2.4 to 2.9.x or 3.0.x, after a timestamped SQLite backup that includes WAL, and they refuse while Msty Studio is running against the live database. Quit Studio first, or import the JSON pack in Persona Studio or Toolbox. On Windows and Linux the Studio version cannot be read yet, so these writes are refused there.
 
 ### Q: What is the Nexus integration?
 **A**: [Msty Nexus](https://msty.ai/nexus/) is the local runtime/gateway. `get_nexus` detects it. `list_models` with `backend=nexus` lists models on its OpenAI-compatible endpoint (`MSTY_NEXUS_PORT`).

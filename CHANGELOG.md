@@ -2,6 +2,41 @@
 
 ## Unreleased
 
+## v6.3.0 - 2026-11-13
+
+Msty Studio 3.0 support. Studio 2.4 to 2.9.x and 3.0.x are supported. Studio 3.1 and later are refused until their storage is checked.
+
+### Added
+
+- Studio 3.0 workspace discovery. The server reads the workspace list and the active workspace from the Home database, finds each workspace in file-based storage (`data/workspaces/<slug>/msty.cloud.db`), in a custom folder from `data/workspace-locations.json`, or for Home in browser storage.
+- Stale-copy detection. When Home has moved to file-based storage, the browser-storage copy Studio leaves behind is listed under `stale_copies` and never read.
+- Optional `workspace` argument (name, slug or id) on the Phase 7 inventory tools, `read_msty_database`, `list_configured_tools` and `export_tool_config`. Omit it for the active workspace. An unknown or unreadable workspace returns an error with the valid choices.
+- `get_msty_installation` reports `active_workspace`, `workspaces`, `stale_copies` and `schema_fingerprint`. The fingerprint is matched against real Studio 2.9.12 and 3.0.0 schemas.
+- `list_workspaces` adds a `storage` key on Studio 3.0.
+- `list_configured_tools` and `export_tool_config` add a `connection` summary per tool: transport, auth type, OAuth mode, URL host, header names and env names. No value is returned. OAuth status reads as `not_stored_in_workspace`, because Studio keeps OAuth tokens in its encrypted secrets store.
+- Crew folders (Studio 3.0). `list_crews` adds `folders`, and `crew_folders` is a catalogue entity.
+- `sync_claude_preferences` reads the Claude Desktop config on Windows and Linux as well as macOS, and adds `missing_in_msty`.
+- `docs/msty-3-layout.md` describes the Studio 3.0 storage layout, with what was checked on Linux and what is assumed for macOS and Windows.
+- Test fixtures from disposable Studio 2.9.12 and 3.0.0 installs: schema dumps and Studio-created rows, with fake secrets only.
+
+### Changed
+
+- Persona and prompt writes run on a detected Studio 3.0.x when all of these hold: the target is the active workspace's current database (an explicit path cannot point anywhere else, and a stale copy is refused), the persona and prompt tables match the shape verified on Studio 3.0.0, the latest migration matches, every column Studio fills is present, and no Studio process is running. Every new row is read back inside the transaction (required columns set, JSON valid, persona linked to its version, prompt linked to its version, foreign keys and `quick_check` clean) and the transaction is rolled back if any check fails.
+- Prompts written by this MCP are marked `source = custom`, as Studio marks its own. They were left at the column default `ootb`, which Studio uses for the prompts it ships. On Studio 3.0 the prompt row and its version also match Studio's own row shape.
+- Inventory reads select only the columns a table really has. A missing column is skipped and listed in `missing_columns` instead of failing the read.
+- Name and value pairs, such as header and env lists, keep the name and hide the value when the name looks like a credential (for example `Authorization` or `X-Api-Key`). A `key` label no longer hides the name while the value showed. `bearer` is treated as a credential name.
+- `get_status(scope=server)` reports `studio_target` as 2.4 to 2.9.x and 3.0.x, with Studio 3.1 and later refused.
+- The refusal message now names Studio 3.1 and later.
+- The Studio 2.5 upgrade hint compares versions as numbers, not strings.
+- Windows and Linux paths no longer use an empty path for the app bundle, which resolved to the working directory.
+
+### Not changed
+
+- On Windows and Linux the Studio version still cannot be read, so persona and prompt writes stay refused there. Reads of Studio 3.0 file-based storage work and carry a warning that names the storage found.
+- Workspaces other than Home that are still in browser storage are listed but not read.
+- Agent Mode sessions are files outside the workspace database and are not read. Provider fields new in 3.0 were not checked and are returned as stored.
+- Tool contracts are unchanged. New arguments are optional and new keys are additive.
+
 ## v6.2.2 - 2026-11-10
 
 Safety release for Msty Studio 3.0.

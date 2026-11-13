@@ -312,7 +312,7 @@ class TestReadWarning:
 class TestReadme:
     def test_write_conditions_name_version_and_platforms(self):
         readme = (Path(__file__).resolve().parent.parent / "README.md").read_text(encoding="utf-8")
-        assert readme.count("a detected Studio 2.4 to 2.9.x") >= 4
+        assert readme.count("a detected Studio 2.4 to 2.9.x or 3.0.x") >= 4
         assert "On Windows and Linux the Studio version cannot be read yet" in readme
 
 
